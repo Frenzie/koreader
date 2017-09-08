@@ -240,7 +240,7 @@ function NewsDownloader:processAtom(feeds, limit)
         if limit ~= 0 and index - 1 == limit then
             break
         end
-        self:downloadFeed(feed, feed_output_dir)
+        self:downloadFeedLink(feed, feed_output_dir)
     end
 end
 
@@ -255,11 +255,26 @@ function NewsDownloader:processRSS(feeds, limit)
         if limit ~= 0 and index - 1 == limit then
             break
         end
-        self:downloadFeed(feed, feed_output_dir)
+        self:downloadFeedLink(feed, feed_output_dir)
     end
 end
 
-function NewsDownloader:downloadFeed(feed, feed_output_dir)
+function NewsDownloader:saveFeedEntry(feed_entry, feed_output_dir)
+    local news_dl_path = ("%s%s%s"):format(feed_output_dir,
+                                               util.replaceInvalidChars(getFeedTitle(feed.title)),
+                                               file_extension)
+    logger.dbg("NewsDownloader: News file will be stored to :", news_dl_path)
+    
+        prependHead = "",
+        insertHead = string.format("<!DOCTYPE html>\n<html>\n<head>\n<title>%s</title>\n</head>\n<body>\n%s\n</body>\n</html>", feed_entry.title, feed_entry.),
+        appendTail = "",
+    
+    local f = io.open(news_dl_path, "w")
+    f:write(content)
+    f:close()
+end
+
+function NewsDownloader:downloadFeedLink(feed, feed_output_dir)
     local link = getFeedLink(feed.link)
     local news_dl_path = ("%s%s%s"):format(feed_output_dir,
                                                util.replaceInvalidChars(getFeedTitle(feed.title)),
