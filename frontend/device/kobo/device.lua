@@ -554,6 +554,44 @@ end
 function Kobo:getUnexpectedWakeup() return unexpected_wakeup_count end
 
 function Kobo:suspend()
+
+local ffi = require("ffi")
+local C = ffi.C
+-- for closing on garbage collection, we need a pointer or aggregate
+-- cdata object (not a plain "int"). So we encapsulate in a struct.
+ffi.cdef[[
+typedef struct rtc_time {
+    int tm_sec;
+    int tm_min;
+    int tm_hour;
+    int tm_mday;
+    int tm_mon;
+    int tm_year;
+    int tm_wday;     /* unused */
+    int tm_yday;     /* unused */
+    int tm_isdst;    /* unused */
+};
+typedef struct rtc_wkalrm {
+    unsigned char enabled;	/* 0 = alarm disabled, 1 = alarm enabled */
+    unsigned char pending;  /* 0 = alarm not pending, 1 = alarm pending */
+    struct rtc_time time;	/* time the alarm is set to */
+};
+]]
+
+-- for ioctl header definition:
+local dummy = require("ffi/posix_h")
+
+-- [pid   983] 22:15:05 [2b9241bc] ioctl(3, RTC_WIE_ON or RTC_WKALM_SET, {enabled=0, pending=0, {tm_sec=0, tm_min=0, tm_hour=0, tm_mday=1, tm_mon=0, tm_year=70, tm_wday=4, tm_yday=1, tm_isdst=0}}) = 0
+local rtc_time = ffi.new("struct rtc_time")
+rtc_time.tm_sec=10
+local rtc_wkalrm = ffi.new("struct rtc_wkalrm")
+rtc_wkalrm.enabled = 1
+rtc_wkalrm.time = rtc_time
+
+local rtc = C.open("/dev/rtc0", C.O_RDWR)
+local RTC_WKALM_SET = 0x0f
+C.ioctl(rtc, RTC_WKALM_SET, rtc_wkalrm)
+
     logger.info("Kobo suspend: going to sleep . . .")
     local UIManager = require("ui/uimanager")
     UIManager:unschedule(check_unexpected_wakeup)
@@ -644,7 +682,8 @@ function Kobo:suspend()
         end
         return false
     end
-    re, err_msg, err_code = f:write("mem\n")
+    print(C.ioctl(rtc, RTC_WKALM_SET, rtc_wkalrm))
+    --~ re, err_msg, err_code = f:write("mem\n")
     -- NOTE: At this point, we *should* be in suspend to RAM, as such,
     -- execution should only resume on wakeup...
 
