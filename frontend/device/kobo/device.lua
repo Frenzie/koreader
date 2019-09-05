@@ -583,12 +583,12 @@ local dummy = require("ffi/posix_h")
 
 -- [pid   983] 22:15:05 [2b9241bc] ioctl(3, RTC_WIE_ON or RTC_WKALM_SET, {enabled=0, pending=0, {tm_sec=0, tm_min=0, tm_hour=0, tm_mday=1, tm_mon=0, tm_year=70, tm_wday=4, tm_yday=1, tm_isdst=0}}) = 0
 local rtc_time = ffi.new("struct rtc_time")
-rtc_time.tm_sec=10
-local rtc_wkalrm = ffi.new("struct rtc_wkalrm")
+rtc_time.tm_sec = 10
+local rtc_wkalrm = ffi.new("struct rtc_wkalrm *")
 rtc_wkalrm.enabled = 1
 rtc_wkalrm.time = rtc_time
 
-local rtc = C.open("/dev/rtc0", C.O_RDWR)
+local rtc = C.open("/dev/rtc0", C.O_RDONLY)
 local RTC_WKALM_SET = 0x0f
 C.ioctl(rtc, RTC_WKALM_SET, rtc_wkalrm)
 
