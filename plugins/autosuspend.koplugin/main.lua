@@ -11,8 +11,10 @@ local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
 local _ = require("gettext")
+local T = require("ffi/util").template
 
 local AutoSuspend = {
+    autoshutdown_sec = G_reader_settings:readSetting("autoshutdown_timeout_seconds") or 3*24*60*60,
     settings = LuaSettings:open(DataStorage:getSettingsDir() .. "/koboautosuspend.lua"),
     settings_id = 0,
     last_action_sec = os.time(),
@@ -56,20 +58,27 @@ function AutoSuspend:_schedule(settings_id)
         return
     end
 
-    local delay
+    local delay_suspend, delay_shutdown
 
     if PluginShare.pause_auto_suspend then
-        delay = self.auto_suspend_sec
+        delay_suspend = self.auto_suspend_sec
+        delay_shutdown = self.autoshutdown_sec
     else
-        delay = self.last_action_sec + self.auto_suspend_sec - os.time()
+        delay_suspend = self.last_action_sec + self.auto_suspend_sec - os.time()
+        delay_shutdown = self.last_action_sec + self.autoshutdown_sec - os.time()
     end
 
-    if delay <= 0 then
+    if delay_suspend <= 0 then
         logger.dbg("AutoSuspend: will suspend the device")
         UIManager:suspend()
+    elseif delay_shutdown <= 0 then
+        logger.dbg("AutoSuspend: initiating shutdown")
+        UIManager:poweroff_action()
     else
-        logger.dbg("AutoSuspend: schedule at ", os.time() + delay)
-        UIManager:scheduleIn(delay, function() self:_schedule(settings_id) end)
+        logger.dbg("AutoSuspend: schedule suspend at ", os.time() + delay_suspend)
+        UIManager:scheduleIn(delay_suspend, function() self:_schedule(settings_id) end)
+        logger.dbg("AutoSuspend: schedule shutdown at ", os.time() + delay_shutdown)
+        UIManager:scheduleIn(delay_shutdown, function() self:_schedule(settings_id) end)
     end
 end
 
@@ -146,6 +155,49 @@ function AutoSuspendWidget:addToMainMenu(menu_items)
                     UIManager:show(InfoMessage:new{
                         text = _("This will take effect on next restart."),
                     })
+                end
+            }
+            UIManager:show(autosuspend_spin)
+        end,
+    }
+    menu_items.autoshutdown = {
+        text = _("Autoshutdown timeout"),
+        -- This won't ever be registered if the plugin is disabled ;).
+        --[[
+        enabled_func = function()
+            -- NOTE: Pilfered from frontend/pluginloader.lua
+            local plugins_disabled = G_reader_settings:readSetting("plugins_disabled") or {}
+            return plugins_disabled["autosuspend"] ~= true
+        end,
+        --]]
+        callback = function()
+            local InfoMessage = require("ui/widget/infomessage")
+            local Screen = Device.screen
+            local SpinWidget = require("ui/widget/spinwidget")
+            local curr_items = G_reader_settings:readSetting("autoshutdown_timeout_seconds") or 3*24*60*60
+            local autosuspend_spin = SpinWidget:new {
+                width = Screen:getWidth() * 0.6,
+                value = curr_items / 24 / 60 / 60,
+                -- About a minute, good for testing and battery life fanatics.
+                -- Just high enough to avoid an instant shutdown death scenario.
+                value_min = 0.0007,
+                -- More than three weeks seems a bit excessive if you want to enable authoshutdown,
+                -- even if the battery can last up to three months.
+                value_max = 21,
+                value_hold_step = 3,
+                precision = "%.2f",
+                ok_text = _("Set timeout"),
+                title_text = _("Timeout in days"),
+                callback = function(autosuspend_spin)
+                    local autoshutdown_timeout_seconds = math.floor(autosuspend_spin.value * 24*60*60)
+                    self.autoshutdown_timeout_seconds = autoshutdown_timeout_seconds
+                    G_reader_settings:saveSetting("autoshutdown_timeout_seconds", autoshutdown_timeout_seconds)
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("The system will automatically shut down after %1 days of inactivity."),
+                            string.format("%.2f", autoshutdown_timeout_seconds/24/60/60)),
+                    })
+                    self:_deprecateLastTask()
+                    self:_start()
                 end
             }
             UIManager:show(autosuspend_spin)
