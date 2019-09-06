@@ -534,6 +534,7 @@ local function getProductId()
 end
 
 local unexpected_wakeup_count = 0
+local wakeup_scheduled = false
 local function check_unexpected_wakeup()
     logger.dbg("Kobo suspend: checking unexpected wakeup:",
                unexpected_wakeup_count)
@@ -554,43 +555,41 @@ end
 function Kobo:getUnexpectedWakeup() return unexpected_wakeup_count end
 
 function Kobo:suspend()
+    local ffi = require("ffi")
+    local C = ffi.C
+    -- for ioctl header definition:
+    local dummy = require("ffi/posix_h")
+    local rtc = require("ffi/rtc_h")
 
-local ffi = require("ffi")
-local C = ffi.C
--- for closing on garbage collection, we need a pointer or aggregate
--- cdata object (not a plain "int"). So we encapsulate in a struct.
-ffi.cdef[[
-typedef struct rtc_time {
-    int tm_sec;
-    int tm_min;
-    int tm_hour;
-    int tm_mday;
-    int tm_mon;
-    int tm_year;
-    int tm_wday;     /* unused */
-    int tm_yday;     /* unused */
-    int tm_isdst;    /* unused */
-};
-typedef struct rtc_wkalrm {
-    unsigned char enabled;	/* 0 = alarm disabled, 1 = alarm enabled */
-    unsigned char pending;  /* 0 = alarm not pending, 1 = alarm pending */
-    struct rtc_time time;	/* time the alarm is set to */
-};
-]]
+    local t = ffi.new("time_t[1]")
+    t[0] = C.time(NULL)
+    t[0] = t[0] + 42
+    print(t[0])
 
--- for ioctl header definition:
-local dummy = require("ffi/posix_h")
+    local ptm = ffi.new("struct tm")
+    ptm = C.localtime(t)
+    print(ptm.tm_sec)
 
--- [pid   983] 22:15:05 [2b9241bc] ioctl(3, RTC_WIE_ON or RTC_WKALM_SET, {enabled=0, pending=0, {tm_sec=0, tm_min=0, tm_hour=0, tm_mday=1, tm_mon=0, tm_year=70, tm_wday=4, tm_yday=1, tm_isdst=0}}) = 0
-local rtc_time = ffi.new("struct rtc_time")
-rtc_time.tm_sec = 10
-local rtc_wkalrm = ffi.new("struct rtc_wkalrm *")
-rtc_wkalrm.enabled = 1
-rtc_wkalrm.time = rtc_time
+    wake = ffi.new("struct rtc_wkalrm")
+    wake.time.tm_sec = ptm.tm_sec
+    wake.time.tm_min = ptm.tm_min
+    wake.time.tm_hour = ptm.tm_hour
+    wake.time.tm_mday = ptm.tm_mday
+    wake.time.tm_mon = ptm.tm_mon
+    wake.time.tm_year = ptm.tm_year
+    -- wday, yday, and isdst fields are unused by Linux
+    wake.time.tm_wday = -1;
+    wake.time.tm_yday = -1;
+    wake.time.tm_isdst = -1;
+    print(wake.time.tm_sec)
 
-local rtc = C.open("/dev/rtc0", C.O_RDONLY)
-local RTC_WKALM_SET = 0x0f
-C.ioctl(rtc, RTC_WKALM_SET, rtc_wkalrm)
+    wake.enabled = 1
+    --wake.time = rtc_time
+
+    local rtc = C.open("/dev/rtc0", C.O_RDONLY)
+    print(rtc, ffi.string(C.strerror(ffi.errno())))
+    local err = C.ioctl(rtc, C.RTC_WKALM_SET, wake)
+    print(err, ffi.string(C.strerror(ffi.errno())))
 
     logger.info("Kobo suspend: going to sleep . . .")
     local UIManager = require("ui/uimanager")
