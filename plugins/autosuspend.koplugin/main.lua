@@ -13,8 +13,12 @@ local logger = require("logger")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
-local AutoSuspend = {
-    autoshutdown_sec = G_reader_settings:readSetting("autoshutdown_timeout_seconds") or 3*24*60*60,
+local default_autoshutdown_timeout_seconds = 3*24*60*60
+
+local AutoSuspend = WidgetContainer:new{
+    name = "autosuspend",
+    is_doc_only = false,
+    autoshutdown_sec = G_reader_settings:readSetting("autoshutdown_timeout_seconds") or default_autoshutdown_timeout_seconds,
     settings = LuaSettings:open(DataStorage:getSettingsDir() .. "/koboautosuspend.lua"),
     settings_id = 0,
     last_action_sec = os.time(),
@@ -100,6 +104,9 @@ function AutoSuspend:init()
     self.auto_suspend_sec = self:_readTimeoutSec()
     self:_deprecateLastTask()
     self:_start()
+    -- self.ui is nil in the testsuite
+    if not self.ui or not self.ui.menu then return end
+    self.ui.menu:registerToMainMenu(self)
 end
 
 function AutoSuspend:onInputEvent()
@@ -119,13 +126,7 @@ function AutoSuspend:onResume()
     self:_start()
 end
 
-AutoSuspend:init()
-
-local AutoSuspendWidget = WidgetContainer:new{
-    name = "autosuspend",
-}
-
-function AutoSuspendWidget:addToMainMenu(menu_items)
+function AutoSuspend:addToMainMenu(menu_items)
     menu_items.autosuspend = {
         text = _("Autosuspend timeout"),
         -- This won't ever be registered if the plugin is disabled ;).
@@ -150,11 +151,14 @@ function AutoSuspendWidget:addToMainMenu(menu_items)
                 ok_text = _("Set timeout"),
                 title_text = _("Timeout in minutes"),
                 callback = function(autosuspend_spin)
-                    G_reader_settings:saveSetting("auto_suspend_timeout_seconds", autosuspend_spin.value * 60)
-                    -- NOTE: Will only take effect after a restart, as we don't have a method to set this live...
+                    local autosuspend_timeout_seconds = autosuspend_spin.value * 60
+                    G_reader_settings:saveSetting("auto_suspend_timeout_seconds", autosuspend_timeout_seconds)
                     UIManager:show(InfoMessage:new{
-                        text = _("This will take effect on next restart."),
+                        text = T(_("The system will automatically suspend after %1 minutes of inactivity."),
+                            string.format("%.2f", autosuspend_timeout_seconds/60)),
                     })
+                    self:_deprecateLastTask()
+                    self:_start()
                 end
             }
             UIManager:show(autosuspend_spin)
@@ -174,7 +178,7 @@ function AutoSuspendWidget:addToMainMenu(menu_items)
             local InfoMessage = require("ui/widget/infomessage")
             local Screen = Device.screen
             local SpinWidget = require("ui/widget/spinwidget")
-            local curr_items = G_reader_settings:readSetting("autoshutdown_timeout_seconds") or 3*24*60*60
+            local curr_items = G_reader_settings:readSetting("autoshutdown_timeout_seconds") or default_autoshutdown_timeout_seconds
             local autosuspend_spin = SpinWidget:new {
                 width = Screen:getWidth() * 0.6,
                 value = curr_items / 24 / 60 / 60,
@@ -205,22 +209,4 @@ function AutoSuspendWidget:addToMainMenu(menu_items)
     }
 end
 
-function AutoSuspendWidget:init()
-    -- self.ui is nil in the testsuite
-    if not self.ui or not self.ui.menu then return end
-    self.ui.menu:registerToMainMenu(self)
-end
-
-function AutoSuspendWidget:onInputEvent()
-    AutoSuspend:onInputEvent()
-end
-
-function AutoSuspendWidget:onSuspend()
-    AutoSuspend:onSuspend()
-end
-
-function AutoSuspendWidget:onResume()
-    AutoSuspend:onResume()
-end
-
-return AutoSuspendWidget
+return AutoSuspend
