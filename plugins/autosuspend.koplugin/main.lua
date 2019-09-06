@@ -129,14 +129,6 @@ end
 function AutoSuspend:addToMainMenu(menu_items)
     menu_items.autosuspend = {
         text = _("Autosuspend timeout"),
-        -- This won't ever be registered if the plugin is disabled ;).
-        --[[
-        enabled_func = function()
-            -- NOTE: Pilfered from frontend/pluginloader.lua
-            local plugins_disabled = G_reader_settings:readSetting("plugins_disabled") or {}
-            return plugins_disabled["autosuspend"] ~= true
-        end,
-        --]]
         callback = function()
             local InfoMessage = require("ui/widget/infomessage")
             local Screen = Device.screen
@@ -166,14 +158,6 @@ function AutoSuspend:addToMainMenu(menu_items)
     }
     menu_items.autoshutdown = {
         text = _("Autoshutdown timeout"),
-        -- This won't ever be registered if the plugin is disabled ;).
-        --[[
-        enabled_func = function()
-            -- NOTE: Pilfered from frontend/pluginloader.lua
-            local plugins_disabled = G_reader_settings:readSetting("plugins_disabled") or {}
-            return plugins_disabled["autosuspend"] ~= true
-        end,
-        --]]
         callback = function()
             local InfoMessage = require("ui/widget/infomessage")
             local Screen = Device.screen
