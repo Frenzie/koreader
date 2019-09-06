@@ -536,6 +536,11 @@ end
 local unexpected_wakeup_count = 0
 local wakeup_scheduled = false
 local function check_unexpected_wakeup()
+    if wakeup_scheduled then
+        logger.dbg("Kobo suspend: scheduled wakeup for shutdown")
+        local UIManager = require("ui/uimanager")
+        UIManager:poweroff_action()
+    end
     logger.dbg("Kobo suspend: checking unexpected wakeup:",
                unexpected_wakeup_count)
     if unexpected_wakeup_count == 0 or unexpected_wakeup_count > 20 then
@@ -554,23 +559,23 @@ end
 
 function Kobo:getUnexpectedWakeup() return unexpected_wakeup_count end
 
-function Kobo:suspend()
-    local ffi = require("ffi")
-    local C = ffi.C
-    -- for ioctl header definition:
-    local dummy = require("ffi/posix_h")
-    local rtc = require("ffi/rtc_h")
+local ffi = require("ffi")
+local C = ffi.C
+-- for ioctl header definition:
+local dummy = require("ffi/posix_h")
+local rtc = require("ffi/rtc_h")
 
+function Kobo:suspend()
     local t = ffi.new("time_t[1]")
     t[0] = C.time(NULL)
-    t[0] = t[0] + 42
+    t[0] = t[0] + 12
     print(t[0])
 
     local ptm = ffi.new("struct tm")
-    ptm = C.localtime(t)
+    ptm = C.gmtime(t)
     print(ptm.tm_sec)
 
-    wake = ffi.new("struct rtc_wkalrm")
+    local wake = ffi.new("struct rtc_wkalrm")
     wake.time.tm_sec = ptm.tm_sec
     wake.time.tm_min = ptm.tm_min
     wake.time.tm_hour = ptm.tm_hour
@@ -586,10 +591,16 @@ function Kobo:suspend()
     wake.enabled = 1
     --wake.time = rtc_time
 
-    local rtc = C.open("/dev/rtc0", C.O_RDONLY)
-    print(rtc, ffi.string(C.strerror(ffi.errno())))
-    local err = C.ioctl(rtc, C.RTC_WKALM_SET, wake)
+    local rtc0 = C.open("/dev/rtc0", C.O_RDONLY)
+    print(rtc0, ffi.string(C.strerror(ffi.errno())))
+    local err = C.ioctl(rtc0, C.RTC_WKALM_SET, wake)
     print(err, ffi.string(C.strerror(ffi.errno())))
+    local err2 = C.close(rtc0)
+    print(err2, ffi.string(C.strerror(ffi.errno())))
+
+    if err == 0 then
+        wakeup_scheduled = true
+    end
 
     logger.info("Kobo suspend: going to sleep . . .")
     local UIManager = require("ui/uimanager")
@@ -681,8 +692,7 @@ function Kobo:suspend()
         end
         return false
     end
-    print(C.ioctl(rtc, RTC_WKALM_SET, rtc_wkalrm))
-    --~ re, err_msg, err_code = f:write("mem\n")
+    re, err_msg, err_code = f:write("mem\n")
     -- NOTE: At this point, we *should* be in suspend to RAM, as such,
     -- execution should only resume on wakeup...
 
