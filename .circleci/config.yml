@@ -67,13 +67,13 @@ jobs:
         command: .ci/test.sh
 
   docs-and-coverage:
-    - filters:
-      branches:
-        only:
-          - master
     - requires:
       - build
       - test
+    - filters:
+        branches:
+          only:
+            - master
     # docs, coverage, and test timing (can we use two outputs at once?); master branch only
     - run:
         name: docs-and-coverage
