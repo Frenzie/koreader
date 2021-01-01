@@ -1,6 +1,6 @@
 version: 2
 jobs:
-  - build:
+  build:
     docker:
       - image: koreader/koappimage:0.1.7
         auth:
@@ -58,32 +58,32 @@ jobs:
             - "/home/ko/.ccache"
             - "base"
 
-    - test:
-      # our lovely unit tests
-      - requires:
-        - build
-      - run:
-          name: test
-          command: .ci/test.sh
+  test:
+    # our lovely unit tests
+    - requires:
+      - build
+    - run:
+        name: test
+        command: .ci/test.sh
 
-    - docs-and-coverage:
-      - filters:
-        branches:
-          only:
-            - master
-      - requires:
-        - build
-        - test
-      # docs, coverage, and test timing (can we use two outputs at once?); master branch only
-      - run:
-          name: docs-and-coverage
-          command: .ci/after_success.sh
-      # by storing the test results CircleCI automatically distributes tests based on execution time
-      - store_test_results:
-          path: koreader-emulator-x86_64-linux-gnu/koreader
-      # CircleCI doesn't make the test results available as artifacts (October 2017)
-      - store_artifacts:
-          path: koreader-emulator-x86_64-linux-gnu/koreader/junit-test-results.xml
+  docs-and-coverage:
+    - filters:
+      branches:
+        only:
+          - master
+    - requires:
+      - build
+      - test
+    # docs, coverage, and test timing (can we use two outputs at once?); master branch only
+    - run:
+        name: docs-and-coverage
+        command: .ci/after_success.sh
+    # by storing the test results CircleCI automatically distributes tests based on execution time
+    - store_test_results:
+        path: koreader-emulator-x86_64-linux-gnu/koreader
+    # CircleCI doesn't make the test results available as artifacts (October 2017)
+    - store_artifacts:
+        path: koreader-emulator-x86_64-linux-gnu/koreader/junit-test-results.xml
 
 workflows:
   version: 2
