@@ -14,7 +14,7 @@ jobs:
       - restore_cache:
           keys:
             # binary dependencies require {{ arch }} because there are different CPUs in use on the servers
-            - deps-{{ arch }}-{{ checksum ".ci/install.sh" }}-{{ checksum ".ci/helper_luarocks.sh" }}
+            - deps-{{ arch }}-{{ checksum ".ci/install.sh" }}
       # need to init some stuff first or git will complain when sticking in base cache
       - run: git submodule init base && git submodule update base && pushd base && git submodule init && git submodule update && popd
       # we can't use command output directly for cache check so we write it to git-rev-base
@@ -32,10 +32,9 @@ jobs:
           name: install
           command: .ci/install.sh
       - save_cache:
-          key: deps-{{ arch }}-{{ checksum ".ci/install.sh" }}-{{ checksum ".ci/helper_luarocks.sh" }}
+          key: deps-{{ arch }}-{{ checksum ".ci/install.sh" }}
           paths:
             - "/home/ko/bin"
-            - "/home/ko/.luarocks"
             # compiled luarocks binaries
             - "install"
 

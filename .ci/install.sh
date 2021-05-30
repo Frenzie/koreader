@@ -23,31 +23,6 @@ else
     echo -e "${ANSI_GREEN}Using cached submodules."
 fi
 
-# install our own updated luarocks
-echo "luarocks installation path: ${CI_BUILD_DIR}"
-if [ ! -f "${CI_BUILD_DIR}/install/bin/luarocks" ]; then
-    git clone https://github.com/torch/luajit-rocks.git
-    pushd luajit-rocks && {
-        git checkout 6529891
-        cmake . -DWITH_LUAJIT21=ON -DCMAKE_INSTALL_PREFIX="${CI_BUILD_DIR}/install"
-        make install
-    } && popd || exit
-else
-    echo -e "${ANSI_GREEN}Using cached luarocks."
-fi
-
-if [ ! -d "${HOME}/.luarocks" ] || [ ! -f "${HOME}/.luarocks/$(md5sum <"${CI_DIR}/helper_luarocks.sh")" ]; then
-    echo -e "${ANSI_GREEN}Grabbing new .luarocks."
-    sudo apt-get update
-    # install openssl devel for luasec
-    sudo apt-get -y install libssl-dev
-
-    "${CI_DIR}/helper_luarocks.sh"
-    touch "${HOME}/.luarocks/$(md5sum <"${CI_DIR}/helper_luarocks.sh")"
-else
-    echo -e "${ANSI_GREEN}Using cached .luarocks."
-fi
-
 #install our own updated shellcheck
 SHELLCHECK_VERSION="v0.7.2"
 SHELLCHECK_URL="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION?}/shellcheck-${SHELLCHECK_VERSION?}.linux.x86_64.tar.xz"
