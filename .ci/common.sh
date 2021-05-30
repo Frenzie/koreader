@@ -69,7 +69,5 @@ export CI_BUILD_DIR
 test -e "${HOME}/bin" || mkdir "${HOME}/bin"
 export PATH=${PWD}/bin:${HOME}/bin:${PATH}
 export PATH=${PATH}:${CI_BUILD_DIR}/install/bin
-if [ -f "${CI_BUILD_DIR}/install/bin/luarocks" ]; then
-    # add local rocks to $PATH
-    eval "$(luarocks path --bin)"
-fi
+
+eval "$(luarocks path --bin)"
