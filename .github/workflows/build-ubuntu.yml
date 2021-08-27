@@ -1,4 +1,4 @@
-name: test
+name: ubuntu-gcc
 
 on: [push, pull_request]
 
@@ -8,8 +8,14 @@ jobs:
     container: koreader/koappimage:0.2.0
 
     steps:
+      - name: Work around stupid checkout thing
+        run: sudo apt-get install -y software-properties-common \
+            && sudo apt-get update \
+            && sudo add-apt-repository -y ppa:git-core/ppa \
+            && sudo apt-get update \
+            && sudo apt-get install -y git
       - name: Check out Git repository
-        uses: actions/checkout@v1
+        uses: actions/checkout@v2
         with:
           fetch-depth: 0
 
