@@ -5,7 +5,7 @@ on: [push, pull_request]
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: koreader/appimage:0.2.0
+    container: koreader/koappimage:0.2.0
 
     steps:
       - name: Check out Git repository
