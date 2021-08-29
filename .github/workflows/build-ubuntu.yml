@@ -12,7 +12,7 @@ jobs:
       - id: get-user
         run: echo "::set-output name=uid_gid::$(id -u):$(id -g)"
 
-  build and test:
+  build:
     runs-on: ubuntu-latest
 
     container:
