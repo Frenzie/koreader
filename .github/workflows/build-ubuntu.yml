@@ -4,8 +4,6 @@ on: [push, pull_request]
 
 jobs:
   build:
-    needs: cleanup
-
     runs-on: ubuntu-latest
 
     container:
