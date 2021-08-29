@@ -3,11 +3,23 @@ name: ubuntu-gcc
 on: [push, pull_request]
 
 jobs:
-  build:
+  # All this nonsense is due to https://github.com/actions/runner/issues/691
+  configure:
     runs-on: ubuntu-latest
+    outputs:
+      uid_gid: ${{ steps.get-user.outputs.uid_gid }}
+    steps:
+      - id: get-user
+        run: echo "::set-output name=uid_gid::$(id -u):$(id -g)"
+
+  build and test:
+    runs-on: ubuntu-latest
+
     container:
       image: koreader/koappimage:0.2.0
-      options: --user ko
+      # Nonsense due to  https://github.com/actions/runner/issues/691
+      # See configure step above
+      options: --user ${{ needs.configure.outputs.uid_gid }}
 
     steps:
       # Because we need at least 2.18 for reasons…
