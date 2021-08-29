@@ -4,22 +4,23 @@ on: [push, pull_request]
 
 jobs:
   # All this nonsense is due to https://github.com/actions/runner/issues/691
-  configure:
-    runs-on: ubuntu-latest
-    outputs:
-      uid_gid: ${{ steps.get-user.outputs.uid_gid }}
+  cleanup:
+    runs-on: ubuntu:latest
     steps:
-      - id: get-user
-        run: echo "::set-output name=uid_gid::$(id -u):$(id -g)"
+      - name: Cleaning up the $GITHUB_WORKSPACE as root from a Docker image
+        # Volume auto mounted by gh actions pointing to the current working-directory
+        run: find /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}/. -name . -o -prune -exec rm -rf -- {} + || true
 
   build:
+    needs: cleanup
+
     runs-on: ubuntu-latest
 
     container:
       image: koreader/koappimage:0.2.0
       # Nonsense due to  https://github.com/actions/runner/issues/691
       # See configure step above
-      options: --user ${{ needs.configure.outputs.uid_gid }}
+      #~ options: --user ${{ needs.configure.outputs.uid_gid }}
 
     steps:
       # Because we need at least 2.18 for reasons…
