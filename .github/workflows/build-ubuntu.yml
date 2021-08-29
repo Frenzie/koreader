@@ -5,7 +5,7 @@ on: [push, pull_request]
 jobs:
   # All this nonsense is due to https://github.com/actions/runner/issues/691
   cleanup:
-    runs-on: ubuntu:latest
+    runs-on: ubuntu-latest
     steps:
       - name: Cleaning up the $GITHUB_WORKSPACE as root from a Docker image
         # Volume auto mounted by gh actions pointing to the current working-directory
