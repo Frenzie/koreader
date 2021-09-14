@@ -3,15 +3,7 @@ name: ubuntu-gcc
 on: [push, pull_request]
 
 jobs:
-  cleanup:
-    runs-on: ubuntu:latest
-    steps:
-      - name: Cleaning up the $GITHUB_WORKSPACE as root from a Docker image
-        # Volume auto mounted by gh actions pointing to the current working-directory
-        run: find /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}/. -name . -o -prune -exec rm -rf -- {} + || true
-
   build:
-    needs: cleanup
     runs-on: ubuntu-latest
 
     container:
@@ -30,6 +22,10 @@ jobs:
           && sudo add-apt-repository -y ppa:git-core/ppa \
           && sudo apt-get update \
           && sudo apt-get install -y git
+
+      - name: Cleaning up the $GITHUB_WORKSPACE as root from a Docker image
+        # Volume auto mounted by gh actions pointing to the current working-directory
+        run: find /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}/. -name . -o -prune -exec rm -rf -- {} + || true
 
       # Nonsense due to  https://github.com/actions/runner/issues/691
       - name: Change dir owner to working user
