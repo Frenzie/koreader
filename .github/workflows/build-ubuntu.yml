@@ -4,9 +4,7 @@ on: [push, pull_request]
 
 jobs:
   cleanup:
-    #~ runs-on: self-hosted
-    container:
-      image: ubuntu:latest
+    runs-on: ubuntu:latest
     steps:
       - name: Cleaning up the $GITHUB_WORKSPACE as root from a Docker image
         # Volume auto mounted by gh actions pointing to the current working-directory
