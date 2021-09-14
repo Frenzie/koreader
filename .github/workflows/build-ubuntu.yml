@@ -36,7 +36,7 @@ jobs:
         #~ with:
           #~ fetch-depth: 0
       - name: Check out Git repository
-        run: git clone https://github.com/Frenzie/koreader.git:github-actions
+        run: git clone https://github.com/Frenzie/koreader.git
 
       - name: Building in progress…
         run: cd koreader && ./kodev test front
