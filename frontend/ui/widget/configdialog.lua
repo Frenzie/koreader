@@ -1011,6 +1011,14 @@ function ConfigDialog:onConfigChoose(values, name, event, args, position, hide_o
         end
         if values then
             self:onConfigChoice(name, values[position])
+            -- Show a one-time info hint: long press to set default
+            local seen_key = "user_seen_longpress_default_hint"
+            if not G_reader_settings:readSetting(seen_key) then
+                -- Small info message, timeout 3 seconds
+                local InfoMessage = require("ui/widget/infomessage")
+                UIManager:show(InfoMessage:new{ text = _("Tip: long press to set default") })
+                G_reader_settings:saveSetting(seen_key, true)
+            end
         end
         if event then
             args = args or {}
@@ -1084,6 +1092,13 @@ function ConfigDialog:onConfigFineTuneChoose(values, name, event, args, directio
                 end
             end
             self:onConfigChoice(name, value)
+            -- one-time hint for long-press default
+            local seen_key = "user_seen_longpress_default_hint"
+            if not G_reader_settings:readSetting(seen_key) then
+                local InfoMessage = require("ui/widget/infomessage")
+                UIManager:show(InfoMessage:new{ text = _("Tip: long press to set default"), timeout = 3 })
+                G_reader_settings:saveSetting(seen_key, true)
+            end
         end
         if event then
             args = args or {}
