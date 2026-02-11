@@ -14,6 +14,7 @@ local TextBoxWidget = require("ui/widget/textboxwidget")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local dbg = require("dbg")
+local logger = require("logger")
 local util = require("util")
 local _ = require("gettext")
 local Screen = Device.screen
@@ -64,6 +65,13 @@ local InputText = InputContainer:extend{
     is_password_type = false, -- set to true if original text_type == "password"
     is_text_editable = true, -- whether text is utf8 reversible and editing won't mess content
     is_text_edited = false, -- whether text has been updated
+    composition_active = nil, -- whether IME composition(preedit) is active
+    composition_text = nil, -- composition string (preedit)
+    composition_cursor = nil, -- cursor position inside composition (newCursorPosition transformed)
+    composition_start_pos = nil, -- 1-based start position of composing span in visible text
+    composition_in_charlist = nil, -- composing text already exists inside charlist
+    composition_finished_text = nil, -- last text inserted via finished composition to suppress duplicates
+    ime_syncing_from_android = false, -- avoid feedback loops during inbox sync
     for_measurement_only = nil, -- When the widget is a one-off used to compute text height
     do_select = false, -- to start text selection
     selection_start_pos = nil, -- selection start position
@@ -75,11 +83,224 @@ function InputText:onFocus() end
 function InputText:onUnfocus() end
 
 -- Resync our position state with our text widget's actual state
+function InputText:_syncImeSelection()
+    if self.ime_syncing_from_android then
+        return
+    end
+    if Device and Device.syncTextInputState then
+        -- On Android snapshot-capable builds, push the full editor state so
+        -- text, selection, and composing spans stay coherent for app-driven
+        -- cursor moves.
+        self:_syncAndroidTextInputState()
+        return
+    end
+    if not Device or not Device.setImeSelection then
+        return
+    end
+
+    local start, endpos
+    if self.composition_active and not self.is_password_type then
+        if self.composition_in_charlist then
+            start = math.max(self:_getNormalizedCharPos() - 1, 0)
+        else
+            start = math.max(self:_getCompositionStartPos() - 1, 0) + self:_getCompositionCursorOffset()
+        end
+        endpos = start
+    elseif self.selection_start_pos then
+        start = math.min(self.selection_start_pos, self.charpos) - 1
+        endpos = math.max(self.selection_start_pos, self.charpos) - 1
+    else
+        start = math.max(self.charpos - 1, 0)
+        endpos = start
+    end
+
+    logger.dbg("InputText:_syncImeSelection start=%s end=%s charpos=%s comp_active=%s comp_start=%s comp_in_charlist=%s comp_cursor=%s comp_text=%s",
+        tostring(start), tostring(endpos), tostring(self.charpos), tostring(self.composition_active),
+        tostring(self.composition_start_pos), tostring(self.composition_in_charlist),
+        tostring(self.composition_cursor), tostring(self.composition_text))
+
+    Device:setImeSelection(start, endpos)
+end
+
+function InputText:_getAndroidTextInputState()
+    if not self.charlist then
+        self.charlist = {}
+    end
+
+    local charpos = self:_getNormalizedCharPos()
+    local selection_start, selection_end
+    local composition_start = -1
+    local composition_end = -1
+    local full_charlist = {}
+
+    if self.composition_active and not self.is_password_type then
+        local composition_chars = util.splitToChars(self.composition_text or "")
+        local composition_start_pos = self:_getCompositionStartPos()
+        if self.composition_in_charlist then
+            for i = 1, #self.charlist do
+                full_charlist[i] = self.charlist[i]
+            end
+            composition_start = composition_start_pos - 1
+            composition_end = composition_start + #composition_chars
+            if self.selection_start_pos then
+                selection_start = math.min(self.selection_start_pos, charpos) - 1
+                selection_end = math.max(self.selection_start_pos, charpos) - 1
+            else
+                selection_start = charpos - 1
+                selection_end = selection_start
+            end
+        else
+            for i = 1, composition_start_pos - 1 do
+                full_charlist[#full_charlist + 1] = self.charlist[i]
+            end
+            composition_start = #full_charlist
+            for _, ch in ipairs(composition_chars) do
+                full_charlist[#full_charlist + 1] = ch
+            end
+            composition_end = #full_charlist
+            for i = composition_start_pos, #self.charlist do
+                full_charlist[#full_charlist + 1] = self.charlist[i]
+            end
+            selection_start = composition_start + self:_getCompositionCursorOffset()
+            selection_end = selection_start
+        end
+    else
+        for i = 1, #self.charlist do
+            full_charlist[i] = self.charlist[i]
+        end
+        if self.selection_start_pos then
+            selection_start = math.min(self.selection_start_pos, charpos) - 1
+            selection_end = math.max(self.selection_start_pos, charpos) - 1
+        else
+            selection_start = charpos - 1
+            selection_end = selection_start
+        end
+    end
+
+    logger.dbg("InputText:_getAndroidTextInputState text=%s sel=%s:%s comp=%s:%s charpos=%s comp_active=%s comp_start=%s comp_in_charlist=%s comp_cursor=%s comp_text=%s",
+        table.concat(full_charlist), tostring(selection_start), tostring(selection_end),
+        tostring(composition_start), tostring(composition_end), tostring(charpos),
+        tostring(self.composition_active), tostring(self.composition_start_pos),
+        tostring(self.composition_in_charlist), tostring(self.composition_cursor), tostring(self.composition_text))
+
+    return {
+        text = table.concat(full_charlist),
+        selectionStart = selection_start,
+        selectionEnd = selection_end,
+        compositionStart = composition_start,
+        compositionEnd = composition_end,
+    }
+end
+
+function InputText:_syncAndroidTextInputState()
+    if self.ime_syncing_from_android or self.for_measurement_only or not self.focused then
+        return
+    end
+    if not Device or not Device.syncTextInputState then
+        return
+    end
+
+    local state = self:_getAndroidTextInputState()
+    logger.dbg("InputText:_syncAndroidTextInputState sending text=%s sel=%s:%s comp=%s:%s focused=%s charpos=%s selection_start=%s comp_active=%s comp_start=%s comp_in_charlist=%s comp_cursor=%s comp_text=%s",
+        tostring(state.text), tostring(state.selectionStart), tostring(state.selectionEnd),
+        tostring(state.compositionStart), tostring(state.compositionEnd), tostring(self.focused),
+        tostring(self.charpos), tostring(self.selection_start_pos), tostring(self.composition_active),
+        tostring(self.composition_start_pos), tostring(self.composition_in_charlist),
+        tostring(self.composition_cursor), tostring(self.composition_text))
+    Device:syncTextInputState(
+        state.text,
+        state.selectionStart,
+        state.selectionEnd,
+        state.compositionStart,
+        state.compositionEnd
+    )
+end
+
 function InputText:resyncPos()
-    self.charpos, self.top_line_num = self.text_widget:getCharPos()
+    local charpos, top_line_num = self.text_widget:getCharPos()
+    if self.composition_active and not self.is_password_type and not self.composition_in_charlist then
+        charpos = charpos - self:_getCompositionCursorOffset()
+        if charpos < 1 then
+            charpos = 1
+        elseif charpos > #self.charlist + 1 then
+            charpos = #self.charlist + 1
+        end
+    end
+    self.charpos, self.top_line_num = charpos, top_line_num
+    logger.dbg("InputText:resyncPos charpos=%s top=%s comp_active=%s comp_start=%s comp_in_charlist=%s comp_cursor=%s comp_text=%s",
+        tostring(self.charpos), tostring(self.top_line_num), tostring(self.composition_active),
+        tostring(self.composition_start_pos), tostring(self.composition_in_charlist),
+        tostring(self.composition_cursor), tostring(self.composition_text))
     if self.strike_callback and self.min_buffer_size == nil then -- not Terminal plugin input
         self.strike_callback()
     end
+end
+
+function InputText:_getNormalizedCharPos()
+    if not self.charlist then
+        self.charlist = {}
+    end
+    local charpos = tonumber(self.charpos) or 1
+    if charpos < 1 then
+        charpos = 1
+    end
+    local max_charpos = #self.charlist + 1
+    if charpos > max_charpos then
+        charpos = max_charpos
+    end
+    self.charpos = charpos
+    return charpos
+end
+
+function InputText:_getCompositionLength()
+    if not self.composition_active or self.is_password_type then
+        return 0
+    end
+    return #util.splitToChars(self.composition_text or "")
+end
+
+function InputText:_getCompositionCursorOffset()
+    if not self.composition_active or self.is_password_type then
+        return 0
+    end
+    local composition_length = self:_getCompositionLength()
+    local offset = (tonumber(self.composition_cursor) or 1) - 1
+    if offset < 0 then
+        offset = 0
+    elseif offset > composition_length then
+        offset = composition_length
+    end
+    return offset
+end
+
+function InputText:_setCompositionCursorOffset(offset)
+    local composition_length = self:_getCompositionLength()
+    if offset < 0 then
+        offset = 0
+    elseif offset > composition_length then
+        offset = composition_length
+    end
+    self.composition_cursor = offset + 1
+end
+
+function InputText:_getCompositionStartPos()
+    if not self.composition_active or self.is_password_type then
+        return self:_getNormalizedCharPos()
+    end
+
+    local composition_length = self:_getCompositionLength()
+    local start_pos = tonumber(self.composition_start_pos) or self:_getNormalizedCharPos()
+    local max_start_pos = #self.charlist + 1
+    if self.composition_in_charlist and composition_length > 0 then
+        max_start_pos = math.max(1, #self.charlist - composition_length + 1)
+    end
+    if start_pos < 1 then
+        start_pos = 1
+    elseif start_pos > max_start_pos then
+        start_pos = max_start_pos
+    end
+    self.composition_start_pos = start_pos
+    return start_pos
 end
 
 local function initTouchEvents()
@@ -139,18 +360,27 @@ local function initTouchEvents()
         -- InputText.onTouchTextBox = _disableEvent
 
         function InputText:onTapTextBox(arg, ges)
+            logger.dbg("InputText:onTapTextBox start parent_switch_focus=%s focused=%s charpos=%s selection_start=%s comp_active=%s comp_start=%s comp_in_charlist=%s comp_cursor=%s comp_text=%s",
+                tostring(self.parent.onSwitchFocus ~= nil), tostring(self.focused), tostring(self.charpos),
+                tostring(self.selection_start_pos), tostring(self.composition_active),
+                tostring(self.composition_start_pos), tostring(self.composition_in_charlist),
+                tostring(self.composition_cursor), tostring(self.composition_text))
             if self.parent.onSwitchFocus then
                 self.parent:onSwitchFocus(self)
             else
                 if not ((Device:hasKeyboard() or Device:hasScreenKB()) and G_reader_settings:nilOrFalse("virtual_keyboard_enabled")) then
                     self:onShowKeyboard()
                 end
-                Device:startTextInput()
                 -- Make sure we're flagged as in focus again.
                 -- NOTE: self:focus() does a full free/reinit cycle, which is completely unnecessary to begin with,
                 --       *and* resets cursor position, which is problematic when tapping on an already in-focus field (#12444).
                 --       So, just flip our own focused flag, that's the only thing we need ;).
                 self.focused = true
+                -- Keep the hidden Android editor populated before we (re)show the IME.
+                -- The app-driven caret move below will request a selection restart, and that must
+                -- operate on the full current buffer, not on a newly created empty EditText.
+                self:_syncAndroidTextInputState()
+                Device:startTextInput()
             end
             -- We might have an incorrect visual focus if we used a DPad, so we need to remove it.
             if Device:hasDPad() then
@@ -168,6 +398,12 @@ local function initTouchEvents()
                 local y = ges.pos.y - self._frame_textwidget.dimen.y - textwidget_offset
                 self.text_widget:moveCursorToXY(x, y, true) -- restrict_to_view=true
                 self:resyncPos()
+                logger.dbg("InputText:onTapTextBox moved_cursor tap_xy=%s:%s charpos=%s top=%s selection_start=%s comp_active=%s comp_start=%s comp_in_charlist=%s comp_cursor=%s comp_text=%s",
+                    tostring(x), tostring(y), tostring(self.charpos), tostring(self.top_line_num),
+                    tostring(self.selection_start_pos), tostring(self.composition_active),
+                    tostring(self.composition_start_pos), tostring(self.composition_in_charlist),
+                    tostring(self.composition_cursor), tostring(self.composition_text))
+                self:_syncImeSelection()
             end
             return true
         end
@@ -437,14 +673,39 @@ function InputText:initTextBox(text, char_added)
 
     -- 'text' is passed in init() and setText() only, to check editability;
     -- other methods modify and provide self.charlist
+
     self.text = text or table.concat(self.charlist)
     local show_charlist, show_text, fgcolor
     if self.text == "" then
-        -- no preset value, use hint text if set
-        show_text = self.hint
-        fgcolor = Blitbuffer.COLOR_DARK_GRAY
-        self.charlist = {}
-        self.charpos = 1
+        -- no preset value: show hint *unless* an IME composition (preedit) is active —
+        -- in that case render the composition visibly even for an otherwise-empty box.
+        if self.composition_active and not self.is_password_type then
+            fgcolor = Blitbuffer.COLOR_BLACK
+            local comp_chars = util.splitToChars(self.composition_text or "")
+            local disp = {}
+            -- Insert composition at the visual insertion point. Keep the display buffer
+            -- free of formatting control chars so cursor math stays 1:1 with glyphs.
+            for i = 1, #self.charlist + 1 do
+                if i == self.charpos then
+                    for _, ch in ipairs(comp_chars) do table.insert(disp, ch) end
+                end
+                if i <= #self.charlist then
+                    table.insert(disp, self.charlist[i])
+                end
+            end
+            show_charlist = disp
+            show_text = table.concat(disp)
+            -- keep an empty underlying charlist; composition is visual-only
+            if not self.charlist then self.charlist = {} end
+            self.charpos = self.charpos or 1
+            self.composition_start_pos = self.composition_start_pos or self.charpos
+        else
+            -- use hint text when nothing to edit
+            show_text = self.hint
+            fgcolor = Blitbuffer.COLOR_DARK_GRAY
+            self.charlist = {}
+            self.charpos = 1
+        end
     else
         fgcolor = Blitbuffer.COLOR_BLACK
         if self.text_type == "password" then
@@ -458,8 +719,57 @@ function InputText:initTextBox(text, char_added)
             end
             show_text = table.concat(show_charlist)
         else
-            show_charlist = self.charlist
-            show_text = self.text
+            -- Normal text: render underlying charlist. If an IME composition (preedit)
+            -- is active and not yet reflected in charlist, insert it into the display
+            -- buffer only. Embedded composing spans already present in charlist are left
+            -- visually unchanged; only the metadata stays active for Android sync.
+            if self.composition_active and not self.is_password_type then
+                local comp_chars = util.splitToChars(self.composition_text or "")
+                local disp = {}
+                local composition_start_pos = self:_getCompositionStartPos()
+                if self.composition_in_charlist then
+                    for i = 1, #self.charlist do
+                        table.insert(disp, self.charlist[i])
+                    end
+                else
+                    local i = 1
+                    while i <= #self.charlist + 1 do
+                        if i == composition_start_pos then
+                            -- Insert composition into the display buffer only.
+                            for _, ch in ipairs(comp_chars) do table.insert(disp, ch) end
+
+                            -- if underlying charlist contains the same sequence beginning at
+                            -- i, skip those chars to avoid double-rendering
+                            local skip = 0
+                            for k = 1, #comp_chars do
+                                if self.charlist[i + k - 1] and self.charlist[i + k - 1] == comp_chars[k] then
+                                    skip = skip + 1
+                                else
+                                    break
+                                end
+                            end
+                            if skip > 0 then
+                                i = i + skip
+                            else
+                                if i <= #self.charlist then
+                                    table.insert(disp, self.charlist[i])
+                                end
+                                i = i + 1
+                            end
+                        else
+                            if i <= #self.charlist then
+                                table.insert(disp, self.charlist[i])
+                            end
+                            i = i + 1
+                        end
+                    end
+                end
+                show_charlist = disp
+                show_text = table.concat(disp)
+            else
+                show_charlist = self.charlist
+                show_text = self.text
+            end
         end
         -- keep previous cursor position if charpos not nil
         if self.charpos == nil then
@@ -470,6 +780,19 @@ function InputText:initTextBox(text, char_added)
             end
         end
     end
+
+    -- compute display cursor position (accounts for inserted visual composition)
+    local display_charpos = self:_getNormalizedCharPos()
+    if self.composition_active and not self.is_password_type and not self.composition_in_charlist then
+        -- The display buffer contains the visual-only composition characters ahead of the
+        -- real insertion point, so account for them when placing the caret.
+        display_charpos = display_charpos + self:_getCompositionCursorOffset()
+    end
+
+    logger.dbg("InputText:initTextBox text=%s display_charpos=%s charpos=%s comp_active=%s comp_start=%s comp_in_charlist=%s comp_cursor=%s comp_text=%s",
+        tostring(show_text), tostring(display_charpos), tostring(self.charpos), tostring(self.composition_active),
+        tostring(self.composition_start_pos), tostring(self.composition_in_charlist),
+        tostring(self.composition_cursor), tostring(self.composition_text))
 
     if self.is_password_type and self.show_password_toggle then
         self._check_button = self._check_button or CheckButton:new{
@@ -522,7 +845,7 @@ function InputText:initTextBox(text, char_added)
         self.text_widget = ScrollTextWidget:new{
             text = show_text,
             charlist = show_charlist,
-            charpos = self.charpos,
+            charpos = display_charpos,
             top_line_num = self.top_line_num,
             editable = self.focused,
             select_mode = self.do_select,
@@ -545,7 +868,7 @@ function InputText:initTextBox(text, char_added)
         self.text_widget = TextBoxWidget:new{
             text = show_text,
             charlist = show_charlist,
-            charpos = self.charpos,
+            charpos = display_charpos,
             top_line_num = self.top_line_num,
             editable = self.focused,
             select_mode = self.do_select,
@@ -565,6 +888,7 @@ function InputText:initTextBox(text, char_added)
     end
     -- Get back possibly modified charpos and virtual_line_num
     self:resyncPos()
+    self:_syncAndroidTextInputState()
 
     self._frame_textwidget = FrameContainer:new{
         bordersize = self.bordersize,
@@ -617,6 +941,11 @@ function InputText:focus()
     self.focused = true
     self.text_widget:focus()
     self._frame_textwidget.color = Blitbuffer.COLOR_BLACK
+    logger.dbg("InputText:focus charpos=%s selection_start=%s comp_active=%s comp_start=%s comp_in_charlist=%s comp_cursor=%s comp_text=%s",
+        tostring(self.charpos), tostring(self.selection_start_pos), tostring(self.composition_active),
+        tostring(self.composition_start_pos), tostring(self.composition_in_charlist),
+        tostring(self.composition_cursor), tostring(self.composition_text))
+    self:_syncAndroidTextInputState()
     Device:startTextInput()
 end
 
@@ -789,7 +1118,25 @@ end
 function InputText:onTextInput(text)
     -- for more than one InputText, let the focused one add chars
     if self.focused then
+        local previous_charpos = self:_getNormalizedCharPos()
+        -- committed text means composition (if any) is finished -> clear visual preedit
+        self.composition_active = nil
+        self.composition_text = nil
+        self.composition_cursor = nil
+        self.composition_start_pos = nil
+        self.composition_in_charlist = nil
+
+        -- avoid double-adding when finish composition auto-commits text
+        if self.composition_finished_text and text == self.composition_finished_text then
+            self.composition_finished_text = nil
+            self.pending_text_input_charpos = self.charpos
+            self.pending_text_input_prev_charpos = previous_charpos
+            return true
+        end
+
         self:addChars(text)
+        self.pending_text_input_charpos = self.charpos
+        self.pending_text_input_prev_charpos = previous_charpos
         return true
     end
     return false
@@ -799,6 +1146,269 @@ dbg:guard(InputText, "onTextInput",
         assert(type(text) == "string",
             "Wrong text type (expected string)")
     end)
+
+-- IME composition (preedit) updates from the Android bridge
+function InputText:onTextComposition(arg)
+    if not self.focused then return false end
+    logger.dbg("TextComposition event: %s", arg)
+    local text = arg and arg.text or ""
+    local p = tonumber(arg and arg.cursor) or 1  -- Android newCursorPosition
+    local finished = arg and arg.finished
+
+    -- Normalize Android newCursorPosition (p) to Lua's 1-based composition cursor (ncp).
+    -- Android semantics: effective index (0..L) = clamp(L + p - 1, 0, L)
+    -- Lua expects composition_cursor ncp in 1..L+1 where ncp-1 == number of chars left of caret.
+    local comp_chars = util.splitToChars(text or "")
+    local L = #comp_chars
+    local idx0 = math.max(0, math.min(L + p - 1, L))
+    local ncp = idx0 + 1
+
+    if not finished then
+        if not self.composition_active or self.composition_in_charlist or not self.composition_start_pos then
+            self.composition_start_pos = self:_getNormalizedCharPos()
+        end
+        self.composition_active = true
+        self.composition_in_charlist = false
+        self.composition_text = text or ""
+        self.composition_cursor = ncp
+        self.charpos = self:_getCompositionStartPos()
+        self:initTextBox()
+    else
+        if text and text ~= "" then
+            -- Some IMEs may finish composition as a commit without sending a separate TextInput.
+            -- Accept the text as committed input and keep pending state to suppress duplicate events.
+            self.composition_finished_text = text
+            self:addChars(text)
+            self.pending_text_input_charpos = self.charpos
+            self.pending_text_input_prev_charpos = self.charpos - #util.splitToChars(text)
+        end
+        self.composition_active = nil
+        self.composition_text = nil
+        self.composition_cursor = nil
+        self.composition_start_pos = nil
+        self.composition_in_charlist = nil
+        self:initTextBox()
+        if Device and Device.setImeComposingRegion then
+            Device:setImeComposingRegion(0,0)
+        end
+    end
+    return true
+end
+
+-- IME requests to delete characters around the caret
+function InputText:onTextDeleteSurrounding(arg)
+    if not self.focused then return false end
+    local left = tonumber(arg and arg.left) or 0
+    local right = tonumber(arg and arg.right) or 0
+
+    if not self.charlist then self.charlist = {} end
+    self:_getNormalizedCharPos()
+
+    if left < 0 then left = 0 end
+    if right < 0 then right = 0 end
+
+    if self.composition_active and not self.is_password_type and not self.composition_in_charlist then
+        local comp_left = self:_getCompositionCursorOffset()
+        local comp_right = self:_getCompositionLength() - comp_left
+        left = math.max(0, left - comp_left)
+        right = math.max(0, right - comp_right)
+    end
+
+    local left_available = self.charpos - 1
+    if left > left_available then left = left_available end
+    local right_available = #self.charlist - (self.charpos - 1)
+    if right > right_available then right = right_available end
+
+    local start_index = self.charpos - left
+    local remove_count = left + right
+    for i = 1, remove_count do
+        table.remove(self.charlist, start_index)
+    end
+    self.charpos = start_index
+    self:initTextBox()
+    return true
+end
+
+-- IME requests to set the selection/caret (Android indices are 0-based)
+function InputText:onTextSelection(arg)
+    if not self.focused then return false end
+    local s = tonumber(arg and arg.start) or 0
+    local e = tonumber(arg and arg["end"]) or 0
+
+    if s < 0 then s = 0 end
+    if e < 0 then e = 0 end
+
+    if self.composition_active and not self.is_password_type then
+        if self.composition_in_charlist then
+            if s > #self.charlist then s = #self.charlist end
+            if e > #self.charlist then e = #self.charlist end
+
+            if s == e then
+                self.selection_start_pos = nil
+                self.charpos = e + 1
+            else
+                self.selection_start_pos = math.min(s, e) + 1
+                self.charpos = math.max(s, e) + 1
+            end
+            self:initTextBox()
+            return true
+        end
+
+        local composition_length = self:_getCompositionLength()
+        if s > composition_length then s = composition_length end
+        if e > composition_length then e = composition_length end
+
+        self.selection_start_pos = nil
+        self:_setCompositionCursorOffset(math.max(s, e))
+        self:initTextBox()
+        return true
+    end
+
+    self.ime_syncing_from_android = true
+
+    if s > #self.charlist then s = #self.charlist end
+    if e > #self.charlist then e = #self.charlist end
+
+    local selection_charpos = math.max(s, e) + 1
+    if s == e and self.pending_text_input_charpos and self.pending_text_input_prev_charpos then
+        if selection_charpos < self.pending_text_input_charpos
+            and selection_charpos <= self.pending_text_input_prev_charpos
+        then
+            self.pending_text_input_charpos = nil
+            self.pending_text_input_prev_charpos = nil
+            self.ime_syncing_from_android = false
+            return true
+        end
+    end
+
+    self.pending_text_input_charpos = nil
+    self.pending_text_input_prev_charpos = nil
+
+    if s == e then
+        self.selection_start_pos = nil
+        self.charpos = selection_charpos
+    else
+        if s < e then
+            self.selection_start_pos = s + 1
+            self.charpos = e + 1
+        else
+            self.selection_start_pos = e + 1
+            self.charpos = s + 1
+        end
+    end
+    self:initTextBox()
+
+    self.ime_syncing_from_android = false
+    return true
+end
+
+function InputText:onTextInputState(arg)
+    if not self.focused then return false end
+
+    local text = arg and arg.text or ""
+    local selection_start = tonumber(arg and arg.selectionStart) or 0
+    local selection_end = tonumber(arg and arg.selectionEnd) or 0
+    local composition_start = tonumber(arg and arg.compositionStart) or -1
+    local composition_end = tonumber(arg and arg.compositionEnd) or -1
+
+    local current_state = self:_getAndroidTextInputState()
+    local full_charlist = util.splitToChars(text)
+    local total_chars = #full_charlist
+
+    if selection_start < 0 then selection_start = 0 end
+    if selection_end < 0 then selection_end = 0 end
+    if selection_start > total_chars then selection_start = total_chars end
+    if selection_end > total_chars then selection_end = total_chars end
+
+    local has_composition = not self.is_password_type
+        and composition_start >= 0
+        and composition_end >= 0
+        and composition_end > composition_start
+
+    if has_composition then
+        if composition_start > total_chars then composition_start = total_chars end
+        if composition_end > total_chars then composition_end = total_chars end
+        if composition_end < composition_start then composition_end = composition_start end
+    else
+        composition_start = -1
+        composition_end = -1
+    end
+
+    if current_state.text == text
+        and current_state.selectionStart == selection_start
+        and current_state.selectionEnd == selection_end
+        and current_state.compositionStart == composition_start
+        and current_state.compositionEnd == composition_end
+    then
+        return true
+    end
+
+    self.ime_syncing_from_android = true
+    self.pending_text_input_charpos = nil
+    self.pending_text_input_prev_charpos = nil
+    self.composition_finished_text = nil
+
+    if has_composition then
+        local composition_charlist = {}
+
+        for i = composition_start + 1, composition_end do
+            composition_charlist[#composition_charlist + 1] = full_charlist[i]
+        end
+
+        self.charlist = full_charlist
+        self.text = text
+        self.composition_active = true
+        self.composition_in_charlist = true
+        self.composition_text = table.concat(composition_charlist)
+        self.composition_start_pos = composition_start + 1
+
+        local composition_cursor = math.max(selection_start, selection_end) - composition_start
+        if composition_cursor < 0 then
+            composition_cursor = 0
+        elseif composition_cursor > #composition_charlist then
+            composition_cursor = #composition_charlist
+        end
+        self:_setCompositionCursorOffset(composition_cursor)
+
+        if selection_start == selection_end then
+            self.selection_start_pos = nil
+            self.charpos = selection_end + 1
+        else
+            self.selection_start_pos = math.min(selection_start, selection_end) + 1
+            self.charpos = math.max(selection_start, selection_end) + 1
+        end
+    else
+        self.charlist = full_charlist
+        self.text = text
+        self.composition_active = nil
+        self.composition_in_charlist = nil
+        self.composition_text = nil
+        self.composition_cursor = nil
+        self.composition_start_pos = nil
+
+        if selection_start == selection_end then
+            self.selection_start_pos = nil
+            self.charpos = selection_end + 1
+        else
+            self.selection_start_pos = math.min(selection_start, selection_end) + 1
+            self.charpos = math.max(selection_start, selection_end) + 1
+        end
+    end
+
+    if current_state.text ~= text then
+        self.is_text_edited = true
+    end
+
+    logger.dbg("InputText:onTextInputState applied text=%s sel=%s:%s comp=%s:%s charpos=%s comp_active=%s comp_start=%s comp_in_charlist=%s comp_cursor=%s comp_text=%s",
+        tostring(text), tostring(selection_start), tostring(selection_end),
+        tostring(composition_start), tostring(composition_end), tostring(self.charpos),
+        tostring(self.composition_active), tostring(self.composition_start_pos),
+        tostring(self.composition_in_charlist), tostring(self.composition_cursor), tostring(self.composition_text))
+
+    self:initTextBox(self.text)
+    self.ime_syncing_from_android = false
+    return true
+end
 
 function InputText:onShowKeyboard(ignore_first_hold_release)
     if self.keyboard then
@@ -923,9 +1533,10 @@ function InputText:addChars(chars)
     if self.readonly or not self:isTextEditable(true) then
         return
     end
-    if #self.charlist == 0 then -- widget text is empty or a hint text is displayed
-        self.charpos = 1 -- move cursor to the first position
-    end
+    -- ensure charlist exists and charpos is valid
+    if not self.charlist then self.charlist = {} end
+    self:_getNormalizedCharPos()
+
     local added_charlist = util.splitToChars(chars)
     for i = #added_charlist, 1, -1 do
         table.insert(self.charlist, self.charpos, added_charlist[i])
@@ -1020,44 +1631,52 @@ function InputText:leftChar()
     if self.charpos == 1 then return end
     self.text_widget:moveCursorLeft()
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:rightChar()
     if self.charpos > #self.charlist then return end
     self.text_widget:moveCursorRight()
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:goToStartOfLine()
     local new_pos = self:getStringPos()
     self.text_widget:moveCursorToCharPos(new_pos)
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:goToEndOfLine()
     local _, new_pos = self:getStringPos()
     self.text_widget:moveCursorToCharPos(new_pos + 1)
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:goToHome()
     self.text_widget:moveCursorHome()
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:goToEnd()
     self.text_widget:moveCursorEnd()
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:moveCursorToCharPos(char_pos)
     self.text_widget:moveCursorToCharPos(char_pos)
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:upLine()
     self.text_widget:moveCursorUp()
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:downLine()

@@ -3,9 +3,11 @@ describe("InputText widget module", function()
     local equals
     setup(function()
         require("commonrequire")
-        InputText = require("ui/widget/inputtext"):new{}
-
         equals = require("util").tableEquals
+    end)
+
+    before_each(function()
+        InputText = require("ui/widget/inputtext"):new{}
     end)
 
     describe("addChars()", function()
@@ -22,6 +24,226 @@ describe("InputText widget module", function()
             assert.is_true( equals({"Л"}, InputText.charlist) )
             InputText:addChars("Луа")
             assert.is_true( equals({"Л", "Л", "у", "а"}, InputText.charlist) )
+        end)
+
+        it("should accept IME composition updates and map Android cursor correctly", function()
+            -- simulate an IME preedit update: text contains 2 chars, Android cursor position p=1 (means cursor at end)
+            InputText:initTextBox("")
+            local comp = { text = "あい", cursor = 1, finished = false }
+            assert.is_true(InputText:onTextComposition(comp))
+            -- composition_text must be set and composition_cursor normalized to 3 (L+1)
+            assert.is_true(InputText.composition_active)
+            assert.are.equal("あい", InputText.composition_text)
+            assert.are.equal(3, tonumber(InputText.composition_cursor))
+
+            -- composition should be visible in the TextWidget and cursor displayed at the
+            -- expected position in the filtered display text. For an empty input box
+            -- self.charpos==1 and ncp==3 => display cursor should be 3.
+            assert.is_not_nil(InputText.text_widget)
+            assert.are.equal(3, InputText.text_widget.charpos)
+
+            -- simulate incremental composition updates (user types 'e' then 'e' while preedit active)
+            assert.is_true(InputText:onTextComposition({ text = "e", cursor = 1, finished = false }))
+            assert.are.equal("e", InputText.composition_text)
+            -- composition must be visible even when text is empty
+            assert.is_not_nil(InputText.text_widget)
+            assert.are.equal(2, InputText.text_widget.charpos)
+
+            assert.is_true(InputText:onTextComposition({ text = "ee", cursor = 1, finished = false }))
+            assert.are.equal("ee", InputText.composition_text)
+            assert.are.equal(3, InputText.text_widget.charpos)
+
+            -- final commit should insert exactly two 'e' characters (no duplication)
+            InputText:onTextInput("ee")
+            assert.are.same({"e","e"}, InputText.charlist)
+
+            -- commit it multiple times (simulate repeated IME commits)
+            InputText:onTextInput("あい")
+            assert.are.same({"e","e","あ","い"}, InputText.charlist)
+
+            -- simulate another composition + commit
+            comp = { text = "ertf", cursor = 1, finished = false }
+            assert.is_true(InputText:onTextComposition(comp))
+            InputText:onTextInput("ertf")
+            assert.are.same({"e","e","あ","い","e","r","t","f"}, InputText.charlist)
+        end)
+
+        it("should insert committed IME text into charlist via onTextInput", function()
+            InputText:initTextBox("")
+            InputText:onTextInput("漢字")
+            assert.is_true( equals({"漢","字"}, InputText.charlist) )
+        end)
+
+        it("should ignore stale collapsed selection updates that move behind fresh IME text", function()
+            InputText:initTextBox("")
+
+            assert.is_true(InputText:onTextInput("a"))
+            assert.are.same({"a"}, InputText.charlist)
+            assert.are.equal(2, InputText.charpos)
+            assert.are.equal(2, InputText.text_widget.charpos)
+
+            -- Some IME flows send a redundant collapsed selection update for the old
+            -- insertion point right after commit. Keep the locally advanced caret.
+            assert.is_true(InputText:onTextSelection({ start = 0, ["end"] = 0 }))
+            assert.are.equal(2, InputText.charpos)
+            assert.are.equal(2, InputText.text_widget.charpos)
+        end)
+
+        it("should handle IME deleteSurroundingText and move caret correctly", function()
+            InputText:initTextBox("")
+            InputText:addChars("abcdef") -- charlist = {a,b,c,d,e,f}, charpos = 7
+            InputText.charpos = 4 -- place caret between 'c' and 'd'
+            assert.are.same({"a","b","c","d","e","f"}, InputText.charlist)
+            assert.are.equal(4, InputText.charpos)
+
+            -- delete one char to left and two to right (remove 'c','d','e')
+            assert.is_true(InputText:onTextDeleteSurrounding({ left = 1, right = 2 }))
+            assert.are.same({"a","b","f"}, InputText.charlist)
+            assert.are.equal(3, InputText.charpos) -- caret moved to start of removed region
+        end)
+
+        it("should handle IME setSelection and move caret/selection correctly", function()
+            InputText:initTextBox("")
+            InputText:addChars("abcdef") -- charlist = {a..f}
+
+            -- Android setSelection(1,3) should select chars at indices 1..2 -> InputText.selection_start_pos=2, charpos=4
+            assert.is_true(InputText:onTextSelection({ start = 1, ["end"] = 3 }))
+            assert.are.equal(2, InputText.selection_start_pos)
+            assert.are.equal(4, InputText.charpos)
+
+            -- collapsed selection moves caret and clears selection
+            assert.is_true(InputText:onTextSelection({ start = 2, ["end"] = 2 }))
+            assert.are.equal(nil, InputText.selection_start_pos)
+            assert.are.equal(3, InputText.charpos)
+        end)
+
+        it("should keep composition-local deleteSurrounding from deleting committed text", function()
+            InputText:initTextBox("")
+            InputText:addChars("abcd")
+            InputText.charpos = 3 -- between b and c
+
+            assert.is_true(InputText:onTextComposition({ text = "xy", cursor = 0, finished = false }))
+            assert.are.equal(2, tonumber(InputText.composition_cursor))
+
+            -- This deletes one character to the left of the caret inside the composition only.
+            assert.is_true(InputText:onTextDeleteSurrounding({ left = 1, right = 0 }))
+            assert.are.same({"a", "b", "c", "d"}, InputText.charlist)
+            assert.are.equal(3, InputText.charpos)
+        end)
+
+        it("should treat selection updates as composition-cursor moves while composing", function()
+            InputText:initTextBox("")
+            InputText:addChars("abcd")
+            InputText.charpos = 3 -- between b and c
+
+            assert.is_true(InputText:onTextComposition({ text = "xy", cursor = 1, finished = false }))
+            assert.are.equal(3, tonumber(InputText.composition_cursor))
+
+            assert.is_true(InputText:onTextSelection({ start = 1, ["end"] = 1 }))
+            assert.are.equal(2, tonumber(InputText.composition_cursor))
+            assert.are.equal(3, InputText.charpos)
+            assert.are.equal(4, InputText.text_widget.charpos)
+        end)
+
+        it("should clear composition state on finished composition", function()
+            InputText:initTextBox("")
+            InputText:addChars("a")
+            InputText:onTextComposition({ text = "い", cursor = 1, finished = false })
+            assert.is_true(InputText.composition_active)
+            assert.are.equal("い", InputText.composition_text)
+
+            assert.is_true(InputText:onTextComposition({ text = "い", cursor = 1, finished = true }))
+            assert.is_nil(InputText.composition_active)
+            assert.is_nil(InputText.composition_text)
+            assert.is_nil(InputText.composition_cursor)
+
+            InputText:onTextInput("い")
+            assert.are.same({"a", "い"}, InputText.charlist)
+        end)
+
+        it("should preserve full text when Android composes over existing content", function()
+            InputText:initTextBox("")
+
+            assert.is_true(InputText:onTextInputState({
+                text = "team",
+                selectionStart = 4,
+                selectionEnd = 4,
+                compositionStart = 0,
+                compositionEnd = 4,
+            }))
+
+            assert.are.same({"t", "e", "a", "m"}, InputText.charlist)
+            assert.are.equal("team", InputText.text)
+            assert.is_true(InputText.composition_active)
+            assert.are.equal("team", InputText.composition_text)
+            assert.are.equal(5, InputText.charpos)
+            assert.are.equal(5, InputText.text_widget.charpos)
+            assert.are.equal("team", InputText.text_widget.text)
+
+            local state = InputText:_getAndroidTextInputState()
+            assert.are.equal("team", state.text)
+            assert.are.equal(4, state.selectionStart)
+            assert.are.equal(4, state.selectionEnd)
+            assert.are.equal(0, state.compositionStart)
+            assert.are.equal(4, state.compositionEnd)
+        end)
+
+        it("should update composing snapshots in place without duplicating text", function()
+            InputText:initTextBox("")
+
+            assert.is_true(InputText:onTextInputState({
+                text = "team",
+                selectionStart = 4,
+                selectionEnd = 4,
+                compositionStart = 0,
+                compositionEnd = 4,
+            }))
+
+            assert.is_true(InputText:onTextInputState({
+                text = "tea",
+                selectionStart = 3,
+                selectionEnd = 3,
+                compositionStart = 0,
+                compositionEnd = 3,
+            }))
+
+            assert.are.same({"t", "e", "a"}, InputText.charlist)
+            assert.are.equal("tea", InputText.text)
+            assert.are.equal("tea", InputText.composition_text)
+            assert.are.equal(4, InputText.charpos)
+            assert.are.equal(4, InputText.text_widget.charpos)
+            assert.are.equal("tea", InputText.text_widget.text)
+
+            local state = InputText:_getAndroidTextInputState()
+            assert.are.equal("tea", state.text)
+            assert.are.equal(3, state.selectionStart)
+            assert.are.equal(3, state.selectionEnd)
+            assert.are.equal(0, state.compositionStart)
+            assert.are.equal(3, state.compositionEnd)
+        end)
+
+        it("should move the real caret inside embedded Android composition", function()
+            InputText:initTextBox("")
+
+            assert.is_true(InputText:onTextInputState({
+                text = "team",
+                selectionStart = 4,
+                selectionEnd = 4,
+                compositionStart = 0,
+                compositionEnd = 4,
+            }))
+
+            assert.is_true(InputText:onTextSelection({ start = 2, ["end"] = 2 }))
+            assert.is_true(InputText.composition_active)
+            assert.are.equal(3, InputText.charpos)
+            assert.are.equal(3, InputText.text_widget.charpos)
+
+            local state = InputText:_getAndroidTextInputState()
+            assert.are.equal("team", state.text)
+            assert.are.equal(2, state.selectionStart)
+            assert.are.equal(2, state.selectionEnd)
+            assert.are.equal(0, state.compositionStart)
+            assert.are.equal(4, state.compositionEnd)
         end)
     end)
 end)
