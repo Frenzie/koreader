@@ -100,6 +100,17 @@ local Device = Generic:extend{
         if not link or type(link) ~= "string" then return end
         return android.openLink(link)
     end,
+    -- Text input control (soft keyboard / IME)
+    startTextInput = function()
+        if A then
+            android.startTextInput()
+        end
+    end,
+    stopTextInput = function()
+        if A then
+            android.stopTextInput()
+        end
+    end,
     canImportFiles = function() return android.app.activity.sdkVersion >= 19 end,
     hasExternalSD = function() return android.getExternalSdPath() end,
     importFile = function(path) android.importFile(path) end,
@@ -240,6 +251,12 @@ function Device:init()
         end,
         setClipboardText = function(text)
             return android.setClipboardText(text)
+        end,
+        handleSdlEv = function(device_input, ev)
+            local SDL_TEXTINPUT = 771
+            if ev.code == SDL_TEXTINPUT then
+                UIManager:sendEvent(Event:new("TextInput", tostring(ev.value)))
+            end
         end,
     }
 
