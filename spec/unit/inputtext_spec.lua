@@ -34,15 +34,37 @@ describe("InputText widget module", function()
             assert.are.equal("あい", InputText.composition_text)
             assert.are.equal(3, tonumber(InputText.composition_cursor))
 
+            -- composition should be visible in the TextWidget and cursor displayed at the
+            -- expected position (self.charpos + ncp). For an empty input box self.charpos==1
+            -- and ncp==3 => display cursor should be 4.
+            assert.is_not_nil(InputText.text_widget)
+            assert.are.equal(4, InputText.text_widget.charpos)
+
+            -- simulate incremental composition updates (user types 'e' then 'e' while preedit active)
+            assert.is_true(InputText:onTextComposition({ text = "e", cursor = 1, finished = false }))
+            assert.are.equal("e", InputText.composition_text)
+            -- composition must be visible even when text is empty
+            assert.is_not_nil(InputText.text_widget)
+            assert.are.equal("e", table.concat(InputText.text_widget.charlist):match("e"))
+
+            assert.is_true(InputText:onTextComposition({ text = "ee", cursor = 1, finished = false }))
+            assert.are.equal("ee", InputText.composition_text)
+            -- still visible and not duplicated
+            assert.are.equal("ee", table.concat(InputText.text_widget.charlist):match("ee"))
+
+            -- final commit should insert exactly two 'e' characters (no duplication)
+            InputText:onTextInput("ee")
+            assert.are.same({"e","e"}, InputText.charlist)
+
             -- commit it multiple times (simulate repeated IME commits)
             InputText:onTextInput("あい")
-            assert.are.same({"あ","い"}, InputText.charlist)
+            assert.are.same({"e","e","あ","い"}, InputText.charlist)
 
             -- simulate another composition + commit
             comp = { text = "ertf", cursor = 1, finished = false }
             assert.is_true(InputText:onTextComposition(comp))
             InputText:onTextInput("ertf")
-            assert.are.same({"あ","い","e","r","t","f"}, InputText.charlist)
+            assert.are.same({"e","e","あ","い","e","r","t","f"}, InputText.charlist)
         end)
 
         it("should insert committed IME text into charlist via onTextInput", function()

@@ -444,11 +444,35 @@ function InputText:initTextBox(text, char_added)
     self.text = text or table.concat(self.charlist)
     local show_charlist, show_text, fgcolor
     if self.text == "" then
-        -- no preset value, use hint text if set
-        show_text = self.hint
-        fgcolor = Blitbuffer.COLOR_DARK_GRAY
-        self.charlist = {}
-        self.charpos = 1
+        -- no preset value: show hint *unless* an IME composition (preedit) is active —
+        -- in that case render the composition visibly even for an otherwise-empty box.
+        if self.composition_active and not self.is_password_type then
+            fgcolor = Blitbuffer.COLOR_BLACK
+            local comp_chars = util.splitToChars(self.composition_text or "")
+            local disp = {}
+            -- insert composition at visual insertion point (self.charpos)
+            for i = 1, #self.charlist + 1 do
+                if i == self.charpos then
+                    table.insert(disp, TextBoxWidget.PTF_BOLD_START)
+                    for _, ch in ipairs(comp_chars) do table.insert(disp, ch) end
+                    table.insert(disp, TextBoxWidget.PTF_BOLD_END)
+                end
+                if i <= #self.charlist then
+                    table.insert(disp, self.charlist[i])
+                end
+            end
+            show_charlist = disp
+            show_text = table.concat(disp)
+            -- keep an empty underlying charlist; composition is visual-only
+            if not self.charlist then self.charlist = {} end
+            self.charpos = self.charpos or 1
+        else
+            -- use hint text when nothing to edit
+            show_text = self.hint
+            fgcolor = Blitbuffer.COLOR_DARK_GRAY
+            self.charlist = {}
+            self.charpos = 1
+        end
     else
         fgcolor = Blitbuffer.COLOR_BLACK
         if self.text_type == "password" then
@@ -463,19 +487,36 @@ function InputText:initTextBox(text, char_added)
             show_text = table.concat(show_charlist)
         else
             -- Normal text: render underlying charlist, but if an IME composition (preedit)
-            -- is active insert it visually (do not mutate the real charlist).
+            -- is active insert it visually (do not mutate the real charlist). When the
+            -- composition text equals the underlying characters starting at the
+            -- insertion point, avoid duplicating them in the visual representation.
             if self.composition_active and not self.is_password_type then
                 local comp_chars = util.splitToChars(self.composition_text or "")
                 local disp = {}
-                -- insert composition at visual insertion point (self.charpos)
-                for i = 1, #self.charlist + 1 do
+                local i = 1
+                while i <= #self.charlist + 1 do
                     if i == self.charpos then
+                        -- insert visual composition
                         table.insert(disp, TextBoxWidget.PTF_BOLD_START)
                         for _, ch in ipairs(comp_chars) do table.insert(disp, ch) end
                         table.insert(disp, TextBoxWidget.PTF_BOLD_END)
-                    end
-                    if i <= #self.charlist then
-                        table.insert(disp, self.charlist[i])
+
+                        -- if underlying charlist contains the same sequence beginning at
+                        -- i, skip those chars to avoid double-rendering
+                        local skip = 0
+                        for k = 1, #comp_chars do
+                            if self.charlist[i + k - 1] and self.charlist[i + k - 1] == comp_chars[k] then
+                                skip = skip + 1
+                            else
+                                break
+                            end
+                        end
+                        i = i + skip
+                    else
+                        if i <= #self.charlist then
+                            table.insert(disp, self.charlist[i])
+                        end
+                        i = i + 1
                     end
                 end
                 show_charlist = disp
@@ -498,10 +539,13 @@ function InputText:initTextBox(text, char_added)
     -- compute display cursor position (accounts for inserted visual composition)
     local display_charpos = self.charpos
     if self.composition_active and not self.is_password_type then
-        local comp_len = #(util.splitToChars(self.composition_text or ""))
+        -- display cursor should be the visual insertion point plus the composition cursor
+        -- offset (ncp). `composition_cursor` is 1..L+1 where ncp-1 == number of chars
+        -- left of the caret inside the composition; in the displayed `charlist` the
+        -- first composition character appears at index `self.charpos + 1` (PTF marker
+        -- occupies `self.charpos`), hence the caret display position is `self.charpos + ncp`.
         local ncp = tonumber(self.composition_cursor) or 1
-        -- displayed position: insertion point + comp_len + (ncp - 1)
-        display_charpos = self.charpos + comp_len + (ncp - 1)
+        display_charpos = self.charpos + ncp
     end
 
     if self.is_password_type and self.show_password_toggle then
