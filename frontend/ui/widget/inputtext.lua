@@ -64,6 +64,9 @@ local InputText = InputContainer:extend{
     is_password_type = false, -- set to true if original text_type == "password"
     is_text_editable = true, -- whether text is utf8 reversible and editing won't mess content
     is_text_edited = false, -- whether text has been updated
+    composition_active = nil, -- whether IME composition(preedit) is active
+    composition_text = nil, -- composition string (preedit)
+    composition_cursor = nil, -- cursor position inside composition (newCursorPosition transformed)
     for_measurement_only = nil, -- When the widget is a one-off used to compute text height
     do_select = false, -- to start text selection
     selection_start_pos = nil, -- selection start position
@@ -437,6 +440,7 @@ function InputText:initTextBox(text, char_added)
 
     -- 'text' is passed in init() and setText() only, to check editability;
     -- other methods modify and provide self.charlist
+
     self.text = text or table.concat(self.charlist)
     local show_charlist, show_text, fgcolor
     if self.text == "" then
@@ -458,8 +462,28 @@ function InputText:initTextBox(text, char_added)
             end
             show_text = table.concat(show_charlist)
         else
-            show_charlist = self.charlist
-            show_text = self.text
+            -- Normal text: render underlying charlist, but if an IME composition (preedit)
+            -- is active insert it visually (do not mutate the real charlist).
+            if self.composition_active and not self.is_password_type then
+                local comp_chars = util.splitToChars(self.composition_text or "")
+                local disp = {}
+                -- insert composition at visual insertion point (self.charpos)
+                for i = 1, #self.charlist + 1 do
+                    if i == self.charpos then
+                        table.insert(disp, TextBoxWidget.PTF_BOLD_START)
+                        for _, ch in ipairs(comp_chars) do table.insert(disp, ch) end
+                        table.insert(disp, TextBoxWidget.PTF_BOLD_END)
+                    end
+                    if i <= #self.charlist then
+                        table.insert(disp, self.charlist[i])
+                    end
+                end
+                show_charlist = disp
+                show_text = table.concat(disp)
+            else
+                show_charlist = self.charlist
+                show_text = self.text
+            end
         end
         -- keep previous cursor position if charpos not nil
         if self.charpos == nil then
@@ -469,6 +493,15 @@ function InputText:initTextBox(text, char_added)
                 self.charpos = 1
             end
         end
+    end
+
+    -- compute display cursor position (accounts for inserted visual composition)
+    local display_charpos = self.charpos
+    if self.composition_active and not self.is_password_type then
+        local comp_len = #(util.splitToChars(self.composition_text or ""))
+        local ncp = tonumber(self.composition_cursor) or 1
+        -- displayed position: insertion point + comp_len + (ncp - 1)
+        display_charpos = self.charpos + comp_len + (ncp - 1)
     end
 
     if self.is_password_type and self.show_password_toggle then
@@ -522,7 +555,7 @@ function InputText:initTextBox(text, char_added)
         self.text_widget = ScrollTextWidget:new{
             text = show_text,
             charlist = show_charlist,
-            charpos = self.charpos,
+            charpos = display_charpos,
             top_line_num = self.top_line_num,
             editable = self.focused,
             select_mode = self.do_select,
@@ -545,7 +578,7 @@ function InputText:initTextBox(text, char_added)
         self.text_widget = TextBoxWidget:new{
             text = show_text,
             charlist = show_charlist,
-            charpos = self.charpos,
+            charpos = display_charpos,
             top_line_num = self.top_line_num,
             editable = self.focused,
             select_mode = self.do_select,
@@ -789,6 +822,11 @@ end
 function InputText:onTextInput(text)
     -- for more than one InputText, let the focused one add chars
     if self.focused then
+        -- committed text means composition (if any) is finished -> clear visual preedit
+        self.composition_active = nil
+        self.composition_text = nil
+        self.composition_cursor = nil
+
         self:addChars(text)
         return true
     end
@@ -799,6 +837,37 @@ dbg:guard(InputText, "onTextInput",
         assert(type(text) == "string",
             "Wrong text type (expected string)")
     end)
+
+-- IME composition (preedit) updates from the Android bridge
+function InputText:onTextComposition(arg)
+    if not self.focused then return false end
+    require'logger'.dbg("TextComposition event: %s", arg)
+    local text = arg and arg.text or ""
+    local p = tonumber(arg and arg.cursor) or 1  -- Android newCursorPosition
+    local finished = arg and arg.finished
+
+    -- Normalize Android newCursorPosition (p) to Lua's 1-based composition cursor (ncp).
+    -- Android semantics: effective index (0..L) = clamp(L + p - 1, 0, L)
+    -- Lua expects composition_cursor ncp in 1..L+1 where ncp-1 == number of chars left of caret.
+    local comp_chars = util.splitToChars(text or "")
+    local L = #comp_chars
+    local idx0 = math.max(0, math.min(L + p - 1, L))
+    local ncp = idx0 + 1
+
+    if not finished then
+        self.composition_active = true
+        self.composition_text = text or ""
+        self.composition_cursor = ncp
+        self:initTextBox()
+    else
+        -- just clear visual preedit; commitText will arrive as a regular TextInput event
+        self.composition_active = nil
+        self.composition_text = nil
+        self.composition_cursor = nil
+        self:initTextBox()
+    end
+    return true
+end
 
 function InputText:onShowKeyboard(ignore_first_hold_release)
     if self.keyboard then
@@ -923,9 +992,12 @@ function InputText:addChars(chars)
     if self.readonly or not self:isTextEditable(true) then
         return
     end
-    if #self.charlist == 0 then -- widget text is empty or a hint text is displayed
-        self.charpos = 1 -- move cursor to the first position
-    end
+    -- ensure charlist exists and charpos is valid
+    if not self.charlist then self.charlist = {} end
+    self.charpos = tonumber(self.charpos) or 1
+    if self.charpos < 1 then self.charpos = 1 end
+    if self.charpos > #self.charlist + 1 then self.charpos = #self.charlist + 1 end
+
     local added_charlist = util.splitToChars(chars)
     for i = #added_charlist, 1, -1 do
         table.insert(self.charlist, self.charpos, added_charlist[i])

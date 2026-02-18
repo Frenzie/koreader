@@ -254,8 +254,16 @@ function Device:init()
         end,
         handleSdlEv = function(device_input, ev)
             local SDL_TEXTINPUT = 771
+            local SDL_TEXTEDITING = 770
             if ev.code == SDL_TEXTINPUT then
                 UIManager:sendEvent(Event:new("TextInput", tostring(ev.value)))
+            elseif ev.code == SDL_TEXTEDITING then
+                -- payload format: <op> '\t' <cursor> '\t' <text>
+                -- op: 'U' = update, 'F' = finish
+                local payload = tostring(ev.value) or ""
+                local op, cursor, text = payload:match("^(%a)\t([%-?%d]+)\t(.*)$")
+                local finished = (op == 'F' or op == 'f')
+                UIManager:sendEvent(Event:new("TextComposition", { text = text or "", cursor = tonumber(cursor) or 0, finished = finished }))
             end
         end,
     }
