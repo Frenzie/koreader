@@ -869,6 +869,62 @@ function InputText:onTextComposition(arg)
     return true
 end
 
+-- IME requests to delete characters around the caret
+function InputText:onTextDeleteSurrounding(arg)
+    if not self.focused then return false end
+    local left = tonumber(arg and arg.left) or 0
+    local right = tonumber(arg and arg.right) or 0
+
+    if not self.charlist then self.charlist = {} end
+    self.charpos = tonumber(self.charpos) or 1
+    if self.charpos < 1 then self.charpos = 1 end
+    if self.charpos > #self.charlist + 1 then self.charpos = #self.charlist + 1 end
+
+    if left < 0 then left = 0 end
+    if right < 0 then right = 0 end
+
+    local left_available = self.charpos - 1
+    if left > left_available then left = left_available end
+    local right_available = #self.charlist - (self.charpos - 1)
+    if right > right_available then right = right_available end
+
+    local start_index = self.charpos - left
+    local remove_count = left + right
+    for i = 1, remove_count do
+        table.remove(self.charlist, start_index)
+    end
+    self.charpos = start_index
+    self:initTextBox()
+    return true
+end
+
+-- IME requests to set the selection/caret (Android indices are 0-based)
+function InputText:onTextSelection(arg)
+    if not self.focused then return false end
+    local s = tonumber(arg and arg.start) or 0
+    local e = tonumber(arg and arg["end"]) or 0
+
+    if s < 0 then s = 0 end
+    if e < 0 then e = 0 end
+    if s > #self.charlist then s = #self.charlist end
+    if e > #self.charlist then e = #self.charlist end
+
+    if s == e then
+        self.selection_start_pos = nil
+        self.charpos = s + 1
+    else
+        if s < e then
+            self.selection_start_pos = s + 1
+            self.charpos = e + 1
+        else
+            self.selection_start_pos = e + 1
+            self.charpos = s + 1
+        end
+    end
+    self:initTextBox()
+    return true
+end
+
 function InputText:onShowKeyboard(ignore_first_hold_release)
     if self.keyboard then
         self.keyboard:showKeyboard(ignore_first_hold_release)

@@ -50,5 +50,33 @@ describe("InputText widget module", function()
             InputText:onTextInput("漢字")
             assert.is_true( equals({"漢","字"}, InputText.charlist) )
         end)
+
+        it("should handle IME deleteSurroundingText and move caret correctly", function()
+            InputText:initTextBox("")
+            InputText:addChars("abcdef") -- charlist = {a,b,c,d,e,f}, charpos = 7
+            InputText.charpos = 4 -- place caret between 'c' and 'd'
+            assert.are.same({"a","b","c","d","e","f"}, InputText.charlist)
+            assert.are.equal(4, InputText.charpos)
+
+            -- delete one char to left and two to right (remove 'c','d','e')
+            assert.is_true(InputText:onTextDeleteSurrounding({ left = 1, right = 2 }))
+            assert.are.same({"a","b","f"}, InputText.charlist)
+            assert.are.equal(3, InputText.charpos) -- caret moved to start of removed region
+        end)
+
+        it("should handle IME setSelection and move caret/selection correctly", function()
+            InputText:initTextBox("")
+            InputText:addChars("abcdef") -- charlist = {a..f}
+
+            -- Android setSelection(1,3) should select chars at indices 1..2 -> InputText.selection_start_pos=2, charpos=4
+            assert.is_true(InputText:onTextSelection({ start = 1, ["end"] = 3 }))
+            assert.are.equal(2, InputText.selection_start_pos)
+            assert.are.equal(4, InputText.charpos)
+
+            -- collapsed selection moves caret and clears selection
+            assert.is_true(InputText:onTextSelection({ start = 2, ["end"] = 2 }))
+            assert.are.equal(nil, InputText.selection_start_pos)
+            assert.are.equal(3, InputText.charpos)
+        end)
     end)
 end)

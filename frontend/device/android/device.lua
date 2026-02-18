@@ -255,6 +255,8 @@ function Device:init()
         handleSdlEv = function(device_input, ev)
             local SDL_TEXTINPUT = 771
             local SDL_TEXTEDITING = 770
+            local SDL_IME_DELETE = 16385
+            local SDL_IME_SELECTION = 16386
             if ev.code == SDL_TEXTINPUT then
                 UIManager:sendEvent(Event:new("TextInput", tostring(ev.value)))
             elseif ev.code == SDL_TEXTEDITING then
@@ -264,6 +266,16 @@ function Device:init()
                 local op, cursor, text = payload:match("^(%a)\t([%-?%d]+)\t(.*)$")
                 local finished = (op == 'F' or op == 'f')
                 UIManager:sendEvent(Event:new("TextComposition", { text = text or "", cursor = tonumber(cursor) or 0, finished = finished }))
+            elseif ev.code == SDL_IME_DELETE then
+                -- payload format: '<before>\t<after>'
+                local payload = tostring(ev.value) or ""
+                local before, after = payload:match("^(%-?%d+)\t(%-?%d+)$")
+                UIManager:sendEvent(Event:new("TextDeleteSurrounding", { left = tonumber(before) or 0, right = tonumber(after) or 0 }))
+            elseif ev.code == SDL_IME_SELECTION then
+                -- payload format: '<start>\t<end>' (0-based, Android semantics)
+                local payload = tostring(ev.value) or ""
+                local s, e = payload:match("^(%-?%d+)\t(%-?%d+)$")
+                UIManager:sendEvent(Event:new("TextSelection", { start = tonumber(s) or 0, ["end"] = tonumber(e) or 0 }))
             end
         end,
     }
