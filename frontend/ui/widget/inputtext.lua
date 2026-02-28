@@ -11,6 +11,7 @@ local HorizontalSpan = require("ui/widget/horizontalspan")
 local IconButton = require("ui/widget/iconbutton")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Notification = require("ui/widget/notification")
+local OverlapGroup = require("ui/widget/overlapgroup")
 local ScrollTextWidget = require("ui/widget/scrolltextwidget")
 local Size = require("ui/size")
 local TextBoxWidget = require("ui/widget/textboxwidget")
@@ -554,9 +555,6 @@ function InputText:initTextBox(text, char_added)
     end
 
     local text_width = self.width
-    if text_width and show_keyboard_button then
-        text_width = math.max(0, text_width - keyboard_button_width)
-    end
 
     if not self.height then
         -- If no height provided, measure the text widget height
@@ -640,10 +638,9 @@ function InputText:initTextBox(text, char_added)
     }
     local input_row
     if show_keyboard_button then
-        input_row = HorizontalGroup:new{
-            align = "center",
+        self._frame_keyboard_button.overlap_align = "right"
+        input_row = OverlapGroup:new{
             self._frame_textwidget,
-            HorizontalSpan:new{ width = keyboard_button_spacing },
             self._frame_keyboard_button,
         }
     else
