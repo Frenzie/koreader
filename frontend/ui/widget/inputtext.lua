@@ -78,6 +78,7 @@ local InputText = InputContainer:extend{
     for_measurement_only = nil, -- When the widget is a one-off used to compute text height
     do_select = false, -- to start text selection
     selection_start_pos = nil, -- selection start position
+    is_editing = false, -- whether multiline editing mode is active
 }
 
 -- These may be (internally) overloaded as needed, depending on Device capabilities.
@@ -218,6 +219,7 @@ end
 local function initDPadEvents()
     if Device:hasDPad() then
         function InputText:onFocus(dx, dy)
+            self.is_editing = false
             -- Event sent by focusmanager
             if self.parent and self.parent.onSwitchFocus then
                 -- Focus moving left, move cursor to the end.
@@ -809,10 +811,24 @@ function InputText:onKeyPress(key)
         elseif key["Home"] then
             self:goToHome()
         elseif key["Press"] then
+            if self.scroll then
+                if not self.is_editing then
+                    self.is_editing = true
+                    return true
+                end
+            end
             self:addChars("\n")
         elseif key["Tab"] then
-            self:addChars("    ")
+            if self.scroll and self.is_editing then
+                self:addChars("    ")
+                return true
+            end
+            return false -- let FocusManager move focus
         elseif key["Back"] then
+            if self.scroll and self.is_editing then
+                self.is_editing = false
+                return true
+            end
             if self.parent.onCloseDialog then
                 self.parent:onCloseDialog()
             else
@@ -821,6 +837,11 @@ function InputText:onKeyPress(key)
         else
             handled = false
         end
+    elseif key["Shift"] and not key["Ctrl"] and not key["Alt"] and not key["ScreenKB"] then
+        if key["Tab"] then
+            return false -- let FocusManager move focus backwards
+        end
+        handled = false
     elseif key["Ctrl"] and not key["Shift"] and not key["Alt"] then
         if key["U"] then
             self:delToStartOfLine()
