@@ -8,7 +8,7 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan = require("ui/widget/horizontalspan")
-local IconButton = require("ui/widget/iconbutton")
+local Button = require("ui/widget/button")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Notification = require("ui/widget/notification")
 local OverlapGroup = require("ui/widget/overlapgroup")
@@ -36,7 +36,7 @@ local InputText = InputContainer:extend{
     focused = true,
     auto_show_keyboard = true, -- show VK on focus/tap (touch & dpad)
     show_keyboard_button = true, -- show a small VK button on the right
-    keyboard_button_icon = "edit",
+    keyboard_button_icon = "⌨",
     keyboard_button_size = Size.item.height_default,
     keyboard_button_padding = Size.padding.small,
     keyboard_button_frame_padding = Size.padding.small,
@@ -519,35 +519,37 @@ function InputText:initTextBox(text, char_added)
     local keyboard_button_width = 0
     local keyboard_button_spacing = self.keyboard_button_spacing or 0
     if show_keyboard_button then
-        self._keyboard_button = self._keyboard_button or IconButton:new{
-            icon = self.keyboard_button_icon,
+        self._keyboard_button = self._keyboard_button or Button:new{
+            text = self.keyboard_button_icon,
             width = self.keyboard_button_size,
             height = self.keyboard_button_size,
             padding = self.keyboard_button_padding,
+            bordersize = 0,
+            margin = 0,
             callback = function()
                 self:onShowKeyboard(nil, "frame_keyboard_button")
             end,
             show_parent = self.parent or self,
         }
         self._frame_keyboard_button = FrameContainer:new{
-            bordersize = self.bordersize,
-            color = Blitbuffer.COLOR_DARK_GRAY,
+            bordersize = 0,
+            color = Blitbuffer.COLOR_BLACK,
             padding = self.keyboard_button_frame_padding,
-            margin = self.keyboard_button_frame_margin,
+            margin = self.keyboard_button_frame_margin + self.bordersize,
             self._keyboard_button,
         }
         -- Override focus highlighting so it independently tracks frame color
         self._keyboard_button.onFocus = function(this)
             if self._frame_keyboard_button then
-                self._frame_keyboard_button.color = Blitbuffer.COLOR_BLACK
+                self._frame_keyboard_button.bordersize = self.bordersize
+                self._frame_keyboard_button.margin = self.keyboard_button_frame_margin
             end
-            -- return Button.onFocus(this)
         end
         self._keyboard_button.onUnfocus = function(this)
             if self._frame_keyboard_button then
-                self._frame_keyboard_button.color = Blitbuffer.COLOR_DARK_GRAY
+                self._frame_keyboard_button.bordersize = 0
+                self._frame_keyboard_button.margin = self.keyboard_button_frame_margin + self.bordersize
             end
-            -- return Button.onUnfocus(this)
         end
         keyboard_button_width = self._frame_keyboard_button:getSize().w + keyboard_button_spacing
     else
