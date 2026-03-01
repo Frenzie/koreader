@@ -810,7 +810,7 @@ function InputText:onKeyPress(key)
         elseif key["Home"] then
             self:goToHome()
         elseif key["Press"] then
-            if self.scroll then
+            if self.scroll and self.allow_newline then
                 if not self.is_editing then
                     self.is_editing = true
                     return true
@@ -824,7 +824,7 @@ function InputText:onKeyPress(key)
             end
             return false -- let FocusManager move focus
         elseif key["Back"] then
-            if self.scroll and self.is_editing then
+            if self.scroll and self.allow_newline and self.is_editing then
                 self.is_editing = false
                 return true
             end
