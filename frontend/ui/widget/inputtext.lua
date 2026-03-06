@@ -74,6 +74,14 @@ function InputText:initEventListener() end
 function InputText:onFocus() end
 function InputText:onUnfocus() end
 
+function InputText:shouldAutoShowKeyboard()
+    if self.readonly then
+        return false
+    end
+
+    return Device:shouldAutoShowVirtualKeyboard()
+end
+
 -- Resync our position state with our text widget's actual state
 function InputText:resyncPos()
     self.charpos, self.top_line_num = self.text_widget:getCharPos()
@@ -142,7 +150,7 @@ local function initTouchEvents()
             if self.parent.onSwitchFocus then
                 self.parent:onSwitchFocus(self)
             else
-                if not ((Device:hasKeyboard() or Device:hasScreenKB()) and G_reader_settings:nilOrFalse("virtual_keyboard_enabled")) then
+                if self:shouldAutoShowKeyboard() then
                     self:onShowKeyboard()
                 end
                 Device:startTextInput()
@@ -209,10 +217,8 @@ local function initDPadEvents()
             -- Event sent by focusmanager
             if self.parent.onSwitchFocus then
                 self.parent:onSwitchFocus(self)
-            elseif (Device:hasKeyboard() or Device:hasScreenKB()) and G_reader_settings:nilOrFalse("virtual_keyboard_enabled") then
-                do end -- luacheck: ignore 541
             else
-                if not self:isKeyboardVisible() then
+                if self:shouldAutoShowKeyboard() and not self:isKeyboardVisible() then
                     self:onShowKeyboard()
                 end
             end
@@ -390,17 +396,6 @@ function InputText:isTextEdited()
 end
 
 function InputText:init()
-    --- @todo This logic belongs in a proper input/device abstraction layer, not here.
-    -- The correct behaviour is to track the *last active input source*:
-    -- physical keyboard → suppress virtual keyboard; gamepad/pen/touch → show it.
-    -- Devices with only a hardware KB should simply return false from that abstraction.
-    -- This placeholder writes a one-time default based on device type; the setting
-    -- is then read statically, meaning the virtual keyboard won't respond
-    -- dynamically to input source changes within a session.
-    if Device:hasScreenKB() and G_reader_settings:hasNot("virtual_keyboard_enabled") then
-        G_reader_settings:makeTrue("virtual_keyboard_enabled")
-    end
-
     if Device:isTouchDevice() then
         if self.text_type == "password" then
             -- text_type changes from "password" to "text" when we toggle password

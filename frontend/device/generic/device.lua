@@ -337,6 +337,36 @@ function Device:getDeviceScreenDPI()
     return self.display_dpi
 end
 
+function Device:getLastTextInputSource()
+    if self.input and self.input.getLastTextInputSource then
+        return self.input:getLastTextInputSource()
+    end
+
+    return self.last_text_input_source
+end
+
+function Device:shouldAutoShowVirtualKeyboard()
+    local vk_setting = G_reader_settings:readSetting("virtual_keyboard_enabled")
+    if vk_setting == true then
+        return true
+    end
+
+    if vk_setting == false then
+        return not self:hasKeyboard()
+    end
+
+    local input_source = self:getLastTextInputSource()
+    if input_source == "physical_keyboard" then
+        return false
+    elseif input_source == "touch" or input_source == "pen" or input_source == "gamepad" then
+        return true
+    elseif input_source == "other_navigation" then
+        return false
+    end
+
+    return not self:hasKeyboard()
+end
+
 function Device:getPowerDevice()
     return self.powerd
 end

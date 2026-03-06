@@ -130,4 +130,52 @@ Event: time 1510346969.076908, -------------- SYN_REPORT ------------
         end)
     end)
 
+    describe("text input source tracking", function()
+        before_each(function()
+            Input.last_text_input_source = nil
+            if Input.device then
+                Input.device.last_text_input_source = nil
+            end
+            Input:resetState()
+        end)
+
+        it("should classify keyboard and navigation keys separately", function()
+            assert.is.same("physical_keyboard", Input:classifyKeyInputSource("A"))
+            assert.is.same("physical_keyboard", Input:classifyKeyInputSource("Shift"))
+            assert.is.same("other_navigation", Input:classifyKeyInputSource("Up"))
+            assert.is.same("other_navigation", Input:classifyKeyInputSource("ScreenKB"))
+        end)
+
+        it("should track touch and pen as the last text input source", function()
+            Input:handleTouchEv({
+                type = C.EV_ABS,
+                code = C.ABS_MT_SLOT,
+                value = 0,
+            })
+            Input:handleTouchEv({
+                type = C.EV_ABS,
+                code = C.ABS_MT_TRACKING_ID,
+                value = 1,
+            })
+            Input:handleTouchEv({
+                type = C.EV_ABS,
+                code = C.ABS_MT_POSITION_X,
+                value = 10,
+            })
+            assert.is.same("touch", Input:getLastTextInputSource())
+
+            Input:handleTouchEv({
+                type = C.EV_ABS,
+                code = C.ABS_MT_TOOL_TYPE,
+                value = 1,
+            })
+            Input:handleTouchEv({
+                type = C.EV_ABS,
+                code = C.ABS_MT_POSITION_X,
+                value = 20,
+            })
+            assert.is.same("pen", Input:getLastTextInputSource())
+        end)
+    end)
+
 end)

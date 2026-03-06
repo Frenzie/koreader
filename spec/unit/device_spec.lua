@@ -501,4 +501,64 @@ describe("device module", function()
         end)
     end)
     -- luacheck: pop
+
+    describe("Virtual keyboard", function()
+        local GenericDevice
+
+        before_each(function()
+            GenericDevice = require("device/generic/device")
+            G_reader_settings:delSetting("virtual_keyboard_enabled")
+        end)
+
+        after_each(function()
+            G_reader_settings:delSetting("virtual_keyboard_enabled")
+        end)
+
+        local function make_device(has_keyboard, last_source)
+            return GenericDevice:extend{
+                hasKeyboard = function()
+                    return has_keyboard
+                end,
+                input = {
+                    getLastTextInputSource = function()
+                        return last_source
+                    end,
+                },
+            }
+        end
+
+        it("should always show when explicitly enabled", function()
+            local device = make_device(true, "physical_keyboard")
+            G_reader_settings:saveSetting("virtual_keyboard_enabled", true)
+
+            assert.is_true(device:shouldAutoShowVirtualKeyboard())
+        end)
+
+        it("should not auto-show with a physical keyboard when explicitly disabled", function()
+            local device = make_device(true, "touch")
+            G_reader_settings:saveSetting("virtual_keyboard_enabled", false)
+
+            assert.is_false(device:shouldAutoShowVirtualKeyboard())
+        end)
+
+        it("should still auto-show without a physical keyboard when explicitly disabled", function()
+            local device = make_device(false, "other_navigation")
+            G_reader_settings:saveSetting("virtual_keyboard_enabled", false)
+
+            assert.is_true(device:shouldAutoShowVirtualKeyboard())
+        end)
+
+        it("should honor the last input source in auto mode", function()
+            assert.is_false(make_device(true, "physical_keyboard"):shouldAutoShowVirtualKeyboard())
+            assert.is_true(make_device(true, "touch"):shouldAutoShowVirtualKeyboard())
+            assert.is_true(make_device(true, "pen"):shouldAutoShowVirtualKeyboard())
+            assert.is_false(make_device(true, "other_navigation"):shouldAutoShowVirtualKeyboard())
+        end)
+
+        it("should default to auto-show when no physical keyboard is available", function()
+            local device = make_device(false, nil)
+
+            assert.is_true(device:shouldAutoShowVirtualKeyboard())
+        end)
+    end)
 end)

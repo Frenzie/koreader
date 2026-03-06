@@ -164,7 +164,7 @@ local sub_item_table = {
         text = _("Keyboard appearance settings"),
         keep_menu_open = true,
         enabled_func = function()
-            return G_reader_settings:isTrue("virtual_keyboard_enabled") or (Device:isTouchDevice() and not Device:hasKeyboard())
+            return Device:isTouchDevice() or Device:hasKeyboard() or Device:hasScreenKB()
         end,
         callback = function(touchmenu_instance)
             local InputDialog = require("ui/widget/inputdialog")
@@ -228,26 +228,80 @@ local sub_item_table = {
     },
 }
 if Device:hasKeyboard() or Device:hasScreenKB() then
+    local function getVirtualKeyboardMode()
+        local setting = G_reader_settings:readSetting("virtual_keyboard_enabled")
+        if setting == true then
+            return "always"
+        elseif setting == false then
+            return "never"
+        end
+
+        return "auto"
+    end
+
+    local function getVirtualKeyboardModeText()
+        local mode = getVirtualKeyboardMode()
+        if mode == "always" then
+            return _("Virtual keyboard: always show")
+        elseif mode == "never" then
+            return _("Virtual keyboard: never auto-show")
+        end
+
+        return _("Virtual keyboard: auto")
+    end
+
+    local function showVirtualKeyboardManualToggleInfo()
+        local keyboard_infomessage
+        if Device:hasScreenKB() then
+            keyboard_infomessage = _("When a text field is selected (in focus), you can temporarily bring up the virtual keyboard by pressing 'ScreenKB' + 'Home'.")
+        else
+            keyboard_infomessage = _("When a text field is selected (in focus), you can temporarily bring up the virtual keyboard by pressing 'Shift' + 'Home'.")
+        end
+        UIManager:show(InfoMessage:new{
+            text = keyboard_infomessage
+        })
+    end
+
     -- we use same pos. 4 as below so we are always above "keyboard appearance settings"
     table.insert(sub_item_table, 4, {
-        text = _("Show virtual keyboard"),
-        help_text = _("Enable this setting to always display the virtual keyboard within a text input field. When a field is selected (in focus), you can temporarily toggle the keyboard on/off by pressing 'Shift' (or 'ScreenKB') + 'Home'."),
-        checked_func = function()
-            return G_reader_settings:isTrue("virtual_keyboard_enabled")
-        end,
-        callback = function()
-            G_reader_settings:flipNilOrFalse("virtual_keyboard_enabled")
-            if G_reader_settings:nilOrFalse("virtual_keyboard_enabled") then
-                local keyboard_infomessage
-                if Device:hasScreenKB() then
-                    keyboard_infomessage = _("When a text field is selected (in focus), you can temporarily bring up the virtual keyboard by pressing 'ScreenKB' + 'Home'.")
-                else
-                    keyboard_infomessage = _("When a text field is selected (in focus), you can temporarily bring up the virtual keyboard by pressing 'Shift' + 'Home'.")
-                end
-                UIManager:show(InfoMessage:new{
-                    text = keyboard_infomessage
-                })
-            end
+        text_func = getVirtualKeyboardModeText,
+        help_text = _("Choose whether the virtual keyboard should auto-show, always show, or stay hidden by default."),
+        sub_item_table_func = function()
+            return {
+                {
+                    text = _("Auto"),
+                    help_text = _("Show the virtual keyboard after touch or pen input, but suppress it after physical keyboard input."),
+                    checked_func = function()
+                        return getVirtualKeyboardMode() == "auto"
+                    end,
+                    callback = function()
+                        G_reader_settings:delSetting("virtual_keyboard_enabled")
+                    end,
+                    radio = true,
+                },
+                {
+                    text = _("Always show"),
+                    checked_func = function()
+                        return getVirtualKeyboardMode() == "always"
+                    end,
+                    callback = function()
+                        G_reader_settings:saveSetting("virtual_keyboard_enabled", true)
+                    end,
+                    radio = true,
+                },
+                {
+                    text = _("Never auto-show"),
+                    help_text = _("Keep the virtual keyboard hidden by default. You can still temporarily toggle it on/off with 'Shift' (or 'ScreenKB') + 'Home'."),
+                    checked_func = function()
+                        return getVirtualKeyboardMode() == "never"
+                    end,
+                    callback = function()
+                        G_reader_settings:saveSetting("virtual_keyboard_enabled", false)
+                        showVirtualKeyboardManualToggleInfo()
+                    end,
+                    radio = true,
+                },
+            }
         end,
     })
 end

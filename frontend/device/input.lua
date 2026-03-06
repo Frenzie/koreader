@@ -24,6 +24,27 @@ local KEY_PRESS   = 1
 local KEY_REPEAT  = 2
 local KEY_RELEASE = 0
 
+local TEXT_INPUT_SOURCE_PHYSICAL_KEYBOARD = "physical_keyboard"
+local TEXT_INPUT_SOURCE_TOUCH = "touch"
+local TEXT_INPUT_SOURCE_PEN = "pen"
+local TEXT_INPUT_SOURCE_OTHER_NAVIGATION = "other_navigation"
+
+local navigation_keycodes = {
+    Up = true,
+    Down = true,
+    Left = true,
+    Right = true,
+    Press = true,
+    Back = true,
+    Home = true,
+    Menu = true,
+    LPgBack = true,
+    RPgBack = true,
+    LPgFwd = true,
+    RPgFwd = true,
+    ScreenKB = true,
+}
+
 -- Based on ABS_MT_TOOL_TYPE values on Elan panels
 local TOOL_TYPE_FINGER = 0
 local TOOL_TYPE_PEN    = 1
@@ -619,6 +640,23 @@ function Input:clearTimeouts()
     self.timer_callbacks = {}
 end
 
+function Input:setLastTextInputSource(source)
+    self.last_text_input_source = source
+    self.device.last_text_input_source = source
+end
+
+function Input:getLastTextInputSource()
+    return self.last_text_input_source
+end
+
+function Input:classifyKeyInputSource(keycode)
+    if navigation_keycodes[keycode] then
+        return TEXT_INPUT_SOURCE_OTHER_NAVIGATION
+    end
+
+    return TEXT_INPUT_SOURCE_PHYSICAL_KEYBOARD
+end
+
 -- Reset the gesture parsing state to a blank slate
 function Input:resetState()
     if self.gesture_detector then
@@ -770,6 +808,7 @@ function Input:handleKeyBoardEv(ev)
     -- handle modifier keys
     if self.modifiers[keycode] ~= nil then
         if ev.value == KEY_PRESS then
+            self:setLastTextInputSource(self:classifyKeyInputSource(keycode))
             self.modifiers[keycode] = true
         elseif ev.value == KEY_RELEASE then
             self.modifiers[keycode] = false
@@ -780,8 +819,10 @@ function Input:handleKeyBoardEv(ev)
     local key = Key:new(keycode, self.modifiers)
 
     if ev.value == KEY_PRESS then
+        self:setLastTextInputSource(self:classifyKeyInputSource(keycode))
         return Event:new("KeyPress", key)
     elseif ev.value == KEY_REPEAT then
+        self:setLastTextInputSource(self:classifyKeyInputSource(keycode))
         -- NOTE: We only care about repeat events from the page-turn buttons and cursor keys...
         --       And we *definitely* don't want to flood the Event queue with useless SleepCover repeats!
         if keycode == "Up" or keycode == "Down" or keycode == "Left" or keycode == "Right"
@@ -948,8 +989,18 @@ function Input:handleTouchEv(ev)
             -- NOTE: On the Elipsa: Finger == 0; Pen == 1
             self:setCurrentMtSlot("tool", ev.value)
         elseif ev.code == C.ABS_MT_POSITION_X or ev.code == C.ABS_X then
+            if self:getCurrentMtSlotData("tool") == TOOL_TYPE_PEN then
+                self:setLastTextInputSource(TEXT_INPUT_SOURCE_PEN)
+            else
+                self:setLastTextInputSource(TEXT_INPUT_SOURCE_TOUCH)
+            end
             self:setCurrentMtSlotChecked("x", ev.value)
         elseif ev.code == C.ABS_MT_POSITION_Y or ev.code == C.ABS_Y then
+            if self:getCurrentMtSlotData("tool") == TOOL_TYPE_PEN then
+                self:setLastTextInputSource(TEXT_INPUT_SOURCE_PEN)
+            else
+                self:setLastTextInputSource(TEXT_INPUT_SOURCE_TOUCH)
+            end
             self:setCurrentMtSlotChecked("y", ev.value)
         elseif ev.code == self.pressure_event and ev.value == 0 then
             -- Drop hovering *pen* events
@@ -985,16 +1036,20 @@ function Input:handleMixedTouchEv(ev)
             self:setCurrentMtSlotChecked("id", ev.value)
         elseif ev.code == C.ABS_MT_POSITION_X then
             -- Panel
+            self:setLastTextInputSource(TEXT_INPUT_SOURCE_TOUCH)
             self:setCurrentMtSlotChecked("x", ev.value)
         elseif ev.code == C.ABS_X then
             -- Panel + Stylus, but we only want to honor stylus!
             if self:getCurrentMtSlotData("tool") == TOOL_TYPE_PEN then
+                self:setLastTextInputSource(TEXT_INPUT_SOURCE_PEN)
                 self:setCurrentMtSlotChecked("x", ev.value)
             end
         elseif ev.code == C.ABS_MT_POSITION_Y then
+            self:setLastTextInputSource(TEXT_INPUT_SOURCE_TOUCH)
             self:setCurrentMtSlotChecked("y", ev.value)
         elseif ev.code == C.ABS_Y then
             if self:getCurrentMtSlotData("tool") == TOOL_TYPE_PEN then
+                self:setLastTextInputSource(TEXT_INPUT_SOURCE_PEN)
                 self:setCurrentMtSlotChecked("y", ev.value)
             end
         end
@@ -1058,8 +1113,18 @@ function Input:handleTouchEvSnow(ev)
         -- NOTE: We ignore ABS_X & ABS_Y, as they may be reported for *multiple* contacts on the BTN_TOUCH:0 frame...
         --       ...without a corresponding ABS_MT_SLOT or ABS_MT_TRACKING_ID, of course... (#11910)
         elseif ev.code == C.ABS_MT_POSITION_X then
+            if self:getCurrentMtSlotData("tool") == TOOL_TYPE_PEN then
+                self:setLastTextInputSource(TEXT_INPUT_SOURCE_PEN)
+            else
+                self:setLastTextInputSource(TEXT_INPUT_SOURCE_TOUCH)
+            end
             self:setCurrentMtSlotChecked("x", ev.value)
         elseif ev.code == C.ABS_MT_POSITION_Y then
+            if self:getCurrentMtSlotData("tool") == TOOL_TYPE_PEN then
+                self:setLastTextInputSource(TEXT_INPUT_SOURCE_PEN)
+            else
+                self:setLastTextInputSource(TEXT_INPUT_SOURCE_TOUCH)
+            end
             self:setCurrentMtSlotChecked("y", ev.value)
         -- NOTE: Similarly, we can't honor ABS_PRESSURE for the same reason as ABS_X & ABS_Y...
         end
@@ -1119,8 +1184,10 @@ function Input:handleTouchEvPhoenix(ev)
         elseif ev.code == C.ABS_MT_TOUCH_MAJOR and ev.value == 0 then
             self:setCurrentMtSlot("id", -1)
         elseif ev.code == C.ABS_MT_POSITION_X then
+            self:setLastTextInputSource(TEXT_INPUT_SOURCE_TOUCH)
             self:setCurrentMtSlot("x", ev.value)
         elseif ev.code == C.ABS_MT_POSITION_Y then
+            self:setLastTextInputSource(TEXT_INPUT_SOURCE_TOUCH)
             self:setCurrentMtSlot("y", ev.value)
         end
     elseif ev.type == C.EV_SYN then
@@ -1147,8 +1214,10 @@ function Input:handleTouchEvLegacy(ev)
     -- On those devices, `handleTouchEv` may not behave as expected. Use this one instead.
     if ev.type == C.EV_ABS then
         if ev.code == C.ABS_X then
+            self:setLastTextInputSource(TEXT_INPUT_SOURCE_TOUCH)
             self:setCurrentMtSlotChecked("x", ev.value)
         elseif ev.code == C.ABS_Y then
+            self:setLastTextInputSource(TEXT_INPUT_SOURCE_TOUCH)
             self:setCurrentMtSlotChecked("y", ev.value)
         elseif ev.code == C.ABS_PRESSURE then
             -- This is the least common denominator we can use to detect contact down & lift...
