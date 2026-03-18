@@ -72,6 +72,21 @@ describe("InputText widget module", function()
             assert.is_true( equals({"漢","字"}, InputText.charlist) )
         end)
 
+        it("should ignore stale collapsed selection updates that move behind fresh IME text", function()
+            InputText:initTextBox("")
+
+            assert.is_true(InputText:onTextInput("a"))
+            assert.are.same({"a"}, InputText.charlist)
+            assert.are.equal(2, InputText.charpos)
+            assert.are.equal(2, InputText.text_widget.charpos)
+
+            -- Some IME flows send a redundant collapsed selection update for the old
+            -- insertion point right after commit. Keep the locally advanced caret.
+            assert.is_true(InputText:onTextSelection({ start = 0, ["end"] = 0 }))
+            assert.are.equal(2, InputText.charpos)
+            assert.are.equal(2, InputText.text_widget.charpos)
+        end)
+
         it("should handle IME deleteSurroundingText and move caret correctly", function()
             InputText:initTextBox("")
             InputText:addChars("abcdef") -- charlist = {a,b,c,d,e,f}, charpos = 7

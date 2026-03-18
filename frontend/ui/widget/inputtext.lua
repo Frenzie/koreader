@@ -925,12 +925,15 @@ end
 function InputText:onTextInput(text)
     -- for more than one InputText, let the focused one add chars
     if self.focused then
+        local previous_charpos = self:_getNormalizedCharPos()
         -- committed text means composition (if any) is finished -> clear visual preedit
         self.composition_active = nil
         self.composition_text = nil
         self.composition_cursor = nil
 
         self:addChars(text)
+        self.pending_text_input_charpos = self.charpos
+        self.pending_text_input_prev_charpos = previous_charpos
         return true
     end
     return false
@@ -1029,9 +1032,23 @@ function InputText:onTextSelection(arg)
     if s > #self.charlist then s = #self.charlist end
     if e > #self.charlist then e = #self.charlist end
 
+    local selection_charpos = math.max(s, e) + 1
+    if s == e and self.pending_text_input_charpos and self.pending_text_input_prev_charpos then
+        if selection_charpos < self.pending_text_input_charpos
+            and selection_charpos <= self.pending_text_input_prev_charpos
+        then
+            self.pending_text_input_charpos = nil
+            self.pending_text_input_prev_charpos = nil
+            return true
+        end
+    end
+
+    self.pending_text_input_charpos = nil
+    self.pending_text_input_prev_charpos = nil
+
     if s == e then
         self.selection_start_pos = nil
-        self.charpos = s + 1
+        self.charpos = selection_charpos
     else
         if s < e then
             self.selection_start_pos = s + 1
