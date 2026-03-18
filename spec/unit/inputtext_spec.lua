@@ -35,22 +35,21 @@ describe("InputText widget module", function()
             assert.are.equal(3, tonumber(InputText.composition_cursor))
 
             -- composition should be visible in the TextWidget and cursor displayed at the
-            -- expected position (self.charpos + ncp). For an empty input box self.charpos==1
-            -- and ncp==3 => display cursor should be 4.
+            -- expected position in the filtered display text. For an empty input box
+            -- self.charpos==1 and ncp==3 => display cursor should be 3.
             assert.is_not_nil(InputText.text_widget)
-            assert.are.equal(4, InputText.text_widget.charpos)
+            assert.are.equal(3, InputText.text_widget.charpos)
 
             -- simulate incremental composition updates (user types 'e' then 'e' while preedit active)
             assert.is_true(InputText:onTextComposition({ text = "e", cursor = 1, finished = false }))
             assert.are.equal("e", InputText.composition_text)
             -- composition must be visible even when text is empty
             assert.is_not_nil(InputText.text_widget)
-            assert.are.equal("e", table.concat(InputText.text_widget.charlist):match("e"))
+            assert.are.equal(2, InputText.text_widget.charpos)
 
             assert.is_true(InputText:onTextComposition({ text = "ee", cursor = 1, finished = false }))
             assert.are.equal("ee", InputText.composition_text)
-            -- still visible and not duplicated
-            assert.are.equal("ee", table.concat(InputText.text_widget.charlist):match("ee"))
+            assert.are.equal(3, InputText.text_widget.charpos)
 
             -- final commit should insert exactly two 'e' characters (no duplication)
             InputText:onTextInput("ee")
@@ -99,6 +98,34 @@ describe("InputText widget module", function()
             assert.is_true(InputText:onTextSelection({ start = 2, ["end"] = 2 }))
             assert.are.equal(nil, InputText.selection_start_pos)
             assert.are.equal(3, InputText.charpos)
+        end)
+
+        it("should keep composition-local deleteSurrounding from deleting committed text", function()
+            InputText:initTextBox("")
+            InputText:addChars("abcd")
+            InputText.charpos = 3 -- between b and c
+
+            assert.is_true(InputText:onTextComposition({ text = "xy", cursor = 0, finished = false }))
+            assert.are.equal(2, tonumber(InputText.composition_cursor))
+
+            -- This deletes one character to the left of the caret inside the composition only.
+            assert.is_true(InputText:onTextDeleteSurrounding({ left = 1, right = 0 }))
+            assert.are.same({"a", "b", "c", "d"}, InputText.charlist)
+            assert.are.equal(3, InputText.charpos)
+        end)
+
+        it("should treat selection updates as composition-cursor moves while composing", function()
+            InputText:initTextBox("")
+            InputText:addChars("abcd")
+            InputText.charpos = 3 -- between b and c
+
+            assert.is_true(InputText:onTextComposition({ text = "xy", cursor = 1, finished = false }))
+            assert.are.equal(3, tonumber(InputText.composition_cursor))
+
+            assert.is_true(InputText:onTextSelection({ start = 1, ["end"] = 1 }))
+            assert.are.equal(2, tonumber(InputText.composition_cursor))
+            assert.are.equal(3, InputText.charpos)
+            assert.are.equal(4, InputText.text_widget.charpos)
         end)
     end)
 end)

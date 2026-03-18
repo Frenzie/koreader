@@ -79,10 +79,66 @@ function InputText:onUnfocus() end
 
 -- Resync our position state with our text widget's actual state
 function InputText:resyncPos()
-    self.charpos, self.top_line_num = self.text_widget:getCharPos()
+    local charpos, top_line_num = self.text_widget:getCharPos()
+    if self.composition_active and not self.is_password_type then
+        charpos = charpos - self:_getCompositionCursorOffset()
+        if charpos < 1 then
+            charpos = 1
+        elseif charpos > #self.charlist + 1 then
+            charpos = #self.charlist + 1
+        end
+    end
+    self.charpos, self.top_line_num = charpos, top_line_num
     if self.strike_callback and self.min_buffer_size == nil then -- not Terminal plugin input
         self.strike_callback()
     end
+end
+
+function InputText:_getNormalizedCharPos()
+    if not self.charlist then
+        self.charlist = {}
+    end
+    local charpos = tonumber(self.charpos) or 1
+    if charpos < 1 then
+        charpos = 1
+    end
+    local max_charpos = #self.charlist + 1
+    if charpos > max_charpos then
+        charpos = max_charpos
+    end
+    self.charpos = charpos
+    return charpos
+end
+
+function InputText:_getCompositionLength()
+    if not self.composition_active or self.is_password_type then
+        return 0
+    end
+    return #util.splitToChars(self.composition_text or "")
+end
+
+function InputText:_getCompositionCursorOffset()
+    if not self.composition_active or self.is_password_type then
+        return 0
+    end
+    local composition_length = self:_getCompositionLength()
+    local offset = (tonumber(self.composition_cursor) or 1) - 1
+    if offset < 0 then
+        offset = 0
+    elseif offset > composition_length then
+        offset = composition_length
+    end
+    return offset
+end
+
+function InputText:_setCompositionCursorOffset(offset)
+    local composition_length = self:_getCompositionLength()
+    if offset < 0 then
+        offset = 0
+    elseif offset > composition_length then
+        offset = composition_length
+    end
+    self.composition_cursor = offset + 1
 end
 
 local function initTouchEvents()
@@ -511,7 +567,14 @@ function InputText:initTextBox(text, char_added)
                                 break
                             end
                         end
-                        i = i + skip
+                        if skip > 0 then
+                            i = i + skip
+                        else
+                            if i <= #self.charlist then
+                                table.insert(disp, self.charlist[i])
+                            end
+                            i = i + 1
+                        end
                     else
                         if i <= #self.charlist then
                             table.insert(disp, self.charlist[i])
@@ -537,15 +600,11 @@ function InputText:initTextBox(text, char_added)
     end
 
     -- compute display cursor position (accounts for inserted visual composition)
-    local display_charpos = self.charpos
+    local display_charpos = self:_getNormalizedCharPos()
     if self.composition_active and not self.is_password_type then
-        -- display cursor should be the visual insertion point plus the composition cursor
-        -- offset (ncp). `composition_cursor` is 1..L+1 where ncp-1 == number of chars
-        -- left of the caret inside the composition; in the displayed `charlist` the
-        -- first composition character appears at index `self.charpos + 1` (PTF marker
-        -- occupies `self.charpos`), hence the caret display position is `self.charpos + ncp`.
-        local ncp = tonumber(self.composition_cursor) or 1
-        display_charpos = self.charpos + ncp
+        -- TextBoxWidget strips PTF markers before positioning the caret, so only add the
+        -- number of composition characters left of the caret, not the marker slots.
+        display_charpos = display_charpos + self:_getCompositionCursorOffset()
     end
 
     if self.is_password_type and self.show_password_toggle then
@@ -920,12 +979,17 @@ function InputText:onTextDeleteSurrounding(arg)
     local right = tonumber(arg and arg.right) or 0
 
     if not self.charlist then self.charlist = {} end
-    self.charpos = tonumber(self.charpos) or 1
-    if self.charpos < 1 then self.charpos = 1 end
-    if self.charpos > #self.charlist + 1 then self.charpos = #self.charlist + 1 end
+    self:_getNormalizedCharPos()
 
     if left < 0 then left = 0 end
     if right < 0 then right = 0 end
+
+    if self.composition_active and not self.is_password_type then
+        local comp_left = self:_getCompositionCursorOffset()
+        local comp_right = self:_getCompositionLength() - comp_left
+        left = math.max(0, left - comp_left)
+        right = math.max(0, right - comp_right)
+    end
 
     local left_available = self.charpos - 1
     if left > left_available then left = left_available end
@@ -950,6 +1014,18 @@ function InputText:onTextSelection(arg)
 
     if s < 0 then s = 0 end
     if e < 0 then e = 0 end
+
+    if self.composition_active and not self.is_password_type then
+        local composition_length = self:_getCompositionLength()
+        if s > composition_length then s = composition_length end
+        if e > composition_length then e = composition_length end
+
+        self.selection_start_pos = nil
+        self:_setCompositionCursorOffset(math.max(s, e))
+        self:initTextBox()
+        return true
+    end
+
     if s > #self.charlist then s = #self.charlist end
     if e > #self.charlist then e = #self.charlist end
 
@@ -1094,9 +1170,7 @@ function InputText:addChars(chars)
     end
     -- ensure charlist exists and charpos is valid
     if not self.charlist then self.charlist = {} end
-    self.charpos = tonumber(self.charpos) or 1
-    if self.charpos < 1 then self.charpos = 1 end
-    if self.charpos > #self.charlist + 1 then self.charpos = #self.charlist + 1 end
+    self:_getNormalizedCharPos()
 
     local added_charlist = util.splitToChars(chars)
     for i = #added_charlist, 1, -1 do
