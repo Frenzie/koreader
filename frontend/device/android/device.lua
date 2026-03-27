@@ -111,6 +111,16 @@ local Device = Generic:extend{
             android.stopTextInput()
         end
     end,
+    setImeSelection = function(self, start, endpos)
+        if A and android.setImeSelection then
+            android.setImeSelection(start, endpos)
+        end
+    end,
+    setImeComposingRegion = function(self, start, endpos)
+        if A and android.setImeComposingRegion then
+            android.setImeComposingRegion(start, endpos)
+        end
+    end,
     canImportFiles = function() return android.app.activity.sdkVersion >= 19 end,
     hasExternalSD = function() return android.getExternalSdPath() end,
     importFile = function(path) android.importFile(path) end,
@@ -276,6 +286,13 @@ function Device:init()
                 local payload = tostring(ev.value) or ""
                 local s, e = payload:match("^(%-?%d+)\t(%-?%d+)$")
                 UIManager:sendEvent(Event:new("TextSelection", { start = tonumber(s) or 0, ["end"] = tonumber(e) or 0 }))
+            elseif ev.code == SDL_IME_COMPOSITION_REGION then
+                -- payload format: '<start>\t<end>' (0-based, Android semantics)
+                local payload = tostring(ev.value) or ""
+                local s, e = payload:match("^(%-?%d+)\t(%-?%d+)$")
+                if s and e then
+                    UIManager:sendEvent(Event:new("TextSelection", { start = tonumber(s) or 0, ["end"] = tonumber(e) or 0 }))
+                end
             end
         end,
     }

@@ -67,6 +67,7 @@ local InputText = InputContainer:extend{
     composition_active = nil, -- whether IME composition(preedit) is active
     composition_text = nil, -- composition string (preedit)
     composition_cursor = nil, -- cursor position inside composition (newCursorPosition transformed)
+    ime_syncing_from_android = false, -- avoid feedback loops during inbox sync
     for_measurement_only = nil, -- When the widget is a one-off used to compute text height
     do_select = false, -- to start text selection
     selection_start_pos = nil, -- selection start position
@@ -78,6 +79,26 @@ function InputText:onFocus() end
 function InputText:onUnfocus() end
 
 -- Resync our position state with our text widget's actual state
+function InputText:_syncImeSelection()
+    if self.ime_syncing_from_android then
+        return
+    end
+    if not Device or not Device.setImeSelection then
+        return
+    end
+
+    local start, endpos
+    if self.selection_start_pos then
+        start = math.min(self.selection_start_pos, self.charpos) - 1
+        endpos = math.max(self.selection_start_pos, self.charpos) - 1
+    else
+        start = math.max(self.charpos - 1, 0)
+        endpos = start
+    end
+
+    Device:setImeSelection(start, endpos)
+end
+
 function InputText:resyncPos()
     local charpos, top_line_num = self.text_widget:getCharPos()
     if self.composition_active and not self.is_password_type then
@@ -1029,6 +1050,8 @@ function InputText:onTextSelection(arg)
         return true
     end
 
+    self.ime_syncing_from_android = true
+
     if s > #self.charlist then s = #self.charlist end
     if e > #self.charlist then e = #self.charlist end
 
@@ -1039,6 +1062,7 @@ function InputText:onTextSelection(arg)
         then
             self.pending_text_input_charpos = nil
             self.pending_text_input_prev_charpos = nil
+            self.ime_syncing_from_android = false
             return true
         end
     end
@@ -1059,6 +1083,13 @@ function InputText:onTextSelection(arg)
         end
     end
     self:initTextBox()
+
+    -- In case text selection updated from IME, sync cursor to Android again.
+    if not self.ime_syncing_from_android then
+        self:_syncImeSelection()
+    end
+
+    self.ime_syncing_from_android = false
     return true
 end
 
@@ -1283,44 +1314,52 @@ function InputText:leftChar()
     if self.charpos == 1 then return end
     self.text_widget:moveCursorLeft()
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:rightChar()
     if self.charpos > #self.charlist then return end
     self.text_widget:moveCursorRight()
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:goToStartOfLine()
     local new_pos = self:getStringPos()
     self.text_widget:moveCursorToCharPos(new_pos)
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:goToEndOfLine()
     local _, new_pos = self:getStringPos()
     self.text_widget:moveCursorToCharPos(new_pos + 1)
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:goToHome()
     self.text_widget:moveCursorHome()
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:goToEnd()
     self.text_widget:moveCursorEnd()
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:moveCursorToCharPos(char_pos)
     self.text_widget:moveCursorToCharPos(char_pos)
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:upLine()
     self.text_widget:moveCursorUp()
     self:resyncPos()
+    self:_syncImeSelection()
 end
 
 function InputText:downLine()
