@@ -87,6 +87,13 @@ function InputText:_syncImeSelection()
     if self.ime_syncing_from_android then
         return
     end
+    if Device and Device.syncTextInputState then
+        -- On Android snapshot-capable builds, push the full editor state so
+        -- text, selection, and composing spans stay coherent for app-driven
+        -- cursor moves.
+        self:_syncAndroidTextInputState()
+        return
+    end
     if not Device or not Device.setImeSelection then
         return
     end
@@ -194,6 +201,12 @@ function InputText:_syncAndroidTextInputState()
     end
 
     local state = self:_getAndroidTextInputState()
+    logger.dbg("InputText:_syncAndroidTextInputState sending text=%s sel=%s:%s comp=%s:%s focused=%s charpos=%s selection_start=%s comp_active=%s comp_start=%s comp_in_charlist=%s comp_cursor=%s comp_text=%s",
+        tostring(state.text), tostring(state.selectionStart), tostring(state.selectionEnd),
+        tostring(state.compositionStart), tostring(state.compositionEnd), tostring(self.focused),
+        tostring(self.charpos), tostring(self.selection_start_pos), tostring(self.composition_active),
+        tostring(self.composition_start_pos), tostring(self.composition_in_charlist),
+        tostring(self.composition_cursor), tostring(self.composition_text))
     Device:syncTextInputState(
         state.text,
         state.selectionStart,
@@ -347,18 +360,27 @@ local function initTouchEvents()
         -- InputText.onTouchTextBox = _disableEvent
 
         function InputText:onTapTextBox(arg, ges)
+            logger.dbg("InputText:onTapTextBox start parent_switch_focus=%s focused=%s charpos=%s selection_start=%s comp_active=%s comp_start=%s comp_in_charlist=%s comp_cursor=%s comp_text=%s",
+                tostring(self.parent.onSwitchFocus ~= nil), tostring(self.focused), tostring(self.charpos),
+                tostring(self.selection_start_pos), tostring(self.composition_active),
+                tostring(self.composition_start_pos), tostring(self.composition_in_charlist),
+                tostring(self.composition_cursor), tostring(self.composition_text))
             if self.parent.onSwitchFocus then
                 self.parent:onSwitchFocus(self)
             else
                 if not ((Device:hasKeyboard() or Device:hasScreenKB()) and G_reader_settings:nilOrFalse("virtual_keyboard_enabled")) then
                     self:onShowKeyboard()
                 end
-                Device:startTextInput()
                 -- Make sure we're flagged as in focus again.
                 -- NOTE: self:focus() does a full free/reinit cycle, which is completely unnecessary to begin with,
                 --       *and* resets cursor position, which is problematic when tapping on an already in-focus field (#12444).
                 --       So, just flip our own focused flag, that's the only thing we need ;).
                 self.focused = true
+                -- Keep the hidden Android editor populated before we (re)show the IME.
+                -- The app-driven caret move below will request a selection restart, and that must
+                -- operate on the full current buffer, not on a newly created empty EditText.
+                self:_syncAndroidTextInputState()
+                Device:startTextInput()
             end
             -- We might have an incorrect visual focus if we used a DPad, so we need to remove it.
             if Device:hasDPad() then
@@ -376,6 +398,11 @@ local function initTouchEvents()
                 local y = ges.pos.y - self._frame_textwidget.dimen.y - textwidget_offset
                 self.text_widget:moveCursorToXY(x, y, true) -- restrict_to_view=true
                 self:resyncPos()
+                logger.dbg("InputText:onTapTextBox moved_cursor tap_xy=%s:%s charpos=%s top=%s selection_start=%s comp_active=%s comp_start=%s comp_in_charlist=%s comp_cursor=%s comp_text=%s",
+                    tostring(x), tostring(y), tostring(self.charpos), tostring(self.top_line_num),
+                    tostring(self.selection_start_pos), tostring(self.composition_active),
+                    tostring(self.composition_start_pos), tostring(self.composition_in_charlist),
+                    tostring(self.composition_cursor), tostring(self.composition_text))
                 self:_syncImeSelection()
             end
             return true
@@ -914,6 +941,10 @@ function InputText:focus()
     self.focused = true
     self.text_widget:focus()
     self._frame_textwidget.color = Blitbuffer.COLOR_BLACK
+    logger.dbg("InputText:focus charpos=%s selection_start=%s comp_active=%s comp_start=%s comp_in_charlist=%s comp_cursor=%s comp_text=%s",
+        tostring(self.charpos), tostring(self.selection_start_pos), tostring(self.composition_active),
+        tostring(self.composition_start_pos), tostring(self.composition_in_charlist),
+        tostring(self.composition_cursor), tostring(self.composition_text))
     self:_syncAndroidTextInputState()
     Device:startTextInput()
 end
