@@ -6,6 +6,7 @@ local UIManager
 local ffi = require("ffi")
 local C = ffi.C
 local FFIUtil = require("ffi/util")
+local JSON = require("json")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local util = require("util")
@@ -109,6 +110,11 @@ local Device = Generic:extend{
     stopTextInput = function()
         if A then
             android.stopTextInput()
+        end
+    end,
+    syncTextInputState = function(self, text, selection_start, selection_end, composition_start, composition_end)
+        if A and android.syncTextInputState then
+            android.syncTextInputState(text, selection_start, selection_end, composition_start, composition_end)
         end
     end,
     setImeSelection = function(self, start, endpos)
@@ -267,26 +273,43 @@ function Device:init()
             local SDL_TEXTEDITING = 770
             local SDL_IME_DELETE = 16385
             local SDL_IME_SELECTION = 16386
-            if ev.code == SDL_TEXTINPUT then
+            local SDL_IME_COMPOSITION_REGION = 16387
+            local SDL_IME_STATE = 16388
+            local use_ime_state_snapshots = android.dequeueTextInputState and android.syncTextInputState
+            if ev.code == SDL_IME_STATE then
+                local payload = tostring(ev.value or "")
+                local ok, state = pcall(JSON.decode, payload)
+                if ok and type(state) == "table" then
+                    UIManager:sendEvent(Event:new("TextInputState", {
+                        text = type(state.text) == "string" and state.text or "",
+                        selectionStart = tonumber(state.selectionStart) or 0,
+                        selectionEnd = tonumber(state.selectionEnd) or 0,
+                        compositionStart = tonumber(state.compositionStart) or -1,
+                        compositionEnd = tonumber(state.compositionEnd) or -1,
+                    }))
+                else
+                    logger.warn("Failed to decode IME state payload", payload)
+                end
+            elseif not use_ime_state_snapshots and ev.code == SDL_TEXTINPUT then
                 UIManager:sendEvent(Event:new("TextInput", tostring(ev.value)))
-            elseif ev.code == SDL_TEXTEDITING then
+            elseif not use_ime_state_snapshots and ev.code == SDL_TEXTEDITING then
                 -- payload format: <op> '\t' <cursor> '\t' <text>
                 -- op: 'U' = update, 'F' = finish
                 local payload = tostring(ev.value) or ""
                 local op, cursor, text = payload:match("^(%a)\t([%-?%d]+)\t(.*)$")
                 local finished = (op == 'F' or op == 'f')
                 UIManager:sendEvent(Event:new("TextComposition", { text = text or "", cursor = tonumber(cursor) or 0, finished = finished }))
-            elseif ev.code == SDL_IME_DELETE then
+            elseif not use_ime_state_snapshots and ev.code == SDL_IME_DELETE then
                 -- payload format: '<before>\t<after>'
                 local payload = tostring(ev.value) or ""
                 local before, after = payload:match("^(%-?%d+)\t(%-?%d+)$")
                 UIManager:sendEvent(Event:new("TextDeleteSurrounding", { left = tonumber(before) or 0, right = tonumber(after) or 0 }))
-            elseif ev.code == SDL_IME_SELECTION then
+            elseif not use_ime_state_snapshots and ev.code == SDL_IME_SELECTION then
                 -- payload format: '<start>\t<end>' (0-based, Android semantics)
                 local payload = tostring(ev.value) or ""
                 local s, e = payload:match("^(%-?%d+)\t(%-?%d+)$")
                 UIManager:sendEvent(Event:new("TextSelection", { start = tonumber(s) or 0, ["end"] = tonumber(e) or 0 }))
-            elseif ev.code == SDL_IME_COMPOSITION_REGION then
+            elseif not use_ime_state_snapshots and ev.code == SDL_IME_COMPOSITION_REGION then
                 -- payload format: '<start>\t<end>' (0-based, Android semantics)
                 local payload = tostring(ev.value) or ""
                 local s, e = payload:match("^(%-?%d+)\t(%-?%d+)$")

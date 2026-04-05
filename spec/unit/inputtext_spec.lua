@@ -3,9 +3,11 @@ describe("InputText widget module", function()
     local equals
     setup(function()
         require("commonrequire")
-        InputText = require("ui/widget/inputtext"):new{}
-
         equals = require("util").tableEquals
+    end)
+
+    before_each(function()
+        InputText = require("ui/widget/inputtext"):new{}
     end)
 
     describe("addChars()", function()
@@ -157,6 +159,91 @@ describe("InputText widget module", function()
 
             InputText:onTextInput("い")
             assert.are.same({"a", "い"}, InputText.charlist)
+        end)
+
+        it("should preserve full text when Android composes over existing content", function()
+            InputText:initTextBox("")
+
+            assert.is_true(InputText:onTextInputState({
+                text = "team",
+                selectionStart = 4,
+                selectionEnd = 4,
+                compositionStart = 0,
+                compositionEnd = 4,
+            }))
+
+            assert.are.same({"t", "e", "a", "m"}, InputText.charlist)
+            assert.are.equal("team", InputText.text)
+            assert.is_true(InputText.composition_active)
+            assert.are.equal("team", InputText.composition_text)
+            assert.are.equal(5, InputText.charpos)
+            assert.are.equal(5, InputText.text_widget.charpos)
+            assert.are.equal("team", InputText.text_widget.text)
+
+            local state = InputText:_getAndroidTextInputState()
+            assert.are.equal("team", state.text)
+            assert.are.equal(4, state.selectionStart)
+            assert.are.equal(4, state.selectionEnd)
+            assert.are.equal(0, state.compositionStart)
+            assert.are.equal(4, state.compositionEnd)
+        end)
+
+        it("should update composing snapshots in place without duplicating text", function()
+            InputText:initTextBox("")
+
+            assert.is_true(InputText:onTextInputState({
+                text = "team",
+                selectionStart = 4,
+                selectionEnd = 4,
+                compositionStart = 0,
+                compositionEnd = 4,
+            }))
+
+            assert.is_true(InputText:onTextInputState({
+                text = "tea",
+                selectionStart = 3,
+                selectionEnd = 3,
+                compositionStart = 0,
+                compositionEnd = 3,
+            }))
+
+            assert.are.same({"t", "e", "a"}, InputText.charlist)
+            assert.are.equal("tea", InputText.text)
+            assert.are.equal("tea", InputText.composition_text)
+            assert.are.equal(4, InputText.charpos)
+            assert.are.equal(4, InputText.text_widget.charpos)
+            assert.are.equal("tea", InputText.text_widget.text)
+
+            local state = InputText:_getAndroidTextInputState()
+            assert.are.equal("tea", state.text)
+            assert.are.equal(3, state.selectionStart)
+            assert.are.equal(3, state.selectionEnd)
+            assert.are.equal(0, state.compositionStart)
+            assert.are.equal(3, state.compositionEnd)
+        end)
+
+        it("should move the real caret inside embedded Android composition", function()
+            InputText:initTextBox("")
+
+            assert.is_true(InputText:onTextInputState({
+                text = "team",
+                selectionStart = 4,
+                selectionEnd = 4,
+                compositionStart = 0,
+                compositionEnd = 4,
+            }))
+
+            assert.is_true(InputText:onTextSelection({ start = 2, ["end"] = 2 }))
+            assert.is_true(InputText.composition_active)
+            assert.are.equal(3, InputText.charpos)
+            assert.are.equal(3, InputText.text_widget.charpos)
+
+            local state = InputText:_getAndroidTextInputState()
+            assert.are.equal("team", state.text)
+            assert.are.equal(2, state.selectionStart)
+            assert.are.equal(2, state.selectionEnd)
+            assert.are.equal(0, state.compositionStart)
+            assert.are.equal(4, state.compositionEnd)
         end)
     end)
 end)
