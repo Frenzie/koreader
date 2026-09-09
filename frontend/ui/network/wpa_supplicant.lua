@@ -76,32 +76,38 @@ local function calculatePsk(ssid, pwd)
     return bin_to_hex(crypto.pbkdf2_hmac_sha1(pwd, ssid, 4096, 32))
 end
 
---- Authenticates network.
-function WpaSupplicant:authenticateNetwork(network)
+-- Configures and enables a network on wpa_supplicant, deriving and saving the
+-- PSK if necessary, but *without* waiting for the association to complete.
+-- Returns the wpa_supplicant network id (or nil + error), so the caller can
+-- poll for the association and clean up on timeout.
+function WpaSupplicant:setupNetworkAuthentication(network)
     local wcli, reply, err
 
     wcli, err = WpaClient.new(self.wpa_supplicant.ctrl_interface)
     if not wcli then
-        return false, T(CLIENT_INIT_ERR_MSG, err)
+        return nil, T(CLIENT_INIT_ERR_MSG, err)
     end
 
     reply, err = wcli:addNetwork()
     if reply == nil then
-        return false, err
+        wcli:close()
+        return nil, err
     end
     local nw_id = reply
 
     reply, err = wcli:setNetwork(nw_id, "ssid", bin_to_hex(network.ssid))
     if reply == nil or reply == "FAIL" then
         wcli:removeNetwork(nw_id)
-        return false, T("An error occurred while selecting network: %1.", err)
+        wcli:close()
+        return nil, T("An error occurred while selecting network: %1.", err)
     end
     -- if password is empty it’s an open AP
     if network.password and #network.password == 0 then -- Open AP
         reply, err = wcli:setNetwork(nw_id, "key_mgmt", "NONE")
         if reply == nil or reply == "FAIL" then
             wcli:removeNetwork(nw_id)
-            return false, T("An error occurred while setting passwordless mode: %1.", err)
+            wcli:close()
+            return nil, T("An error occurred while setting passwordless mode: %1.", err)
         end
     -- else it’s a WPA AP
     else
@@ -112,10 +118,29 @@ function WpaSupplicant:authenticateNetwork(network)
         reply, err = wcli:setNetwork(nw_id, "psk", network.psk)
         if reply == nil or reply == "FAIL" then
             wcli:removeNetwork(nw_id)
-            return false, T("An error occurred while setting password: %1.", err)
+            wcli:close()
+            return nil, T("An error occurred while setting password: %1.", err)
         end
     end
     wcli:enableNetworkByID(nw_id)
+    wcli:close()
+
+    return nw_id
+end
+
+--- Authenticates network.
+function WpaSupplicant:authenticateNetwork(network)
+    local wcli, err
+
+    local nw_id, setup_err = self:setupNetworkAuthentication(network)
+    if not nw_id then
+        return false, setup_err
+    end
+
+    wcli, err = WpaClient.new(self.wpa_supplicant.ctrl_interface)
+    if not wcli then
+        return false, T(CLIENT_INIT_ERR_MSG, err)
+    end
 
     wcli:attach()
     local cnt = 0
@@ -235,6 +260,7 @@ function WpaSupplicant.init(network_mgr, options)
     network_mgr.getNetworkList = WpaSupplicant.getNetworkList
     network_mgr.getCurrentNetwork = WpaSupplicant.getCurrentNetwork
     network_mgr.authenticateNetwork = WpaSupplicant.authenticateNetwork
+    network_mgr.setupNetworkAuthentication = WpaSupplicant.setupNetworkAuthentication
     network_mgr.disconnectNetwork = WpaSupplicant.disconnectNetwork
 end
 

@@ -148,8 +148,7 @@ function SonyPRSTUX:initNetworkManager(NetworkMgr)
     end
 
     function NetworkMgr:turnOnWifi(complete_callback, interactive)
-       os.execute("./set-wifi.sh on")
-       return self:reconnectOrShowNetworkMenu(complete_callback, interactive)
+       return self:asyncTurnOnWifi(function() os.execute("./set-wifi.sh on") end, complete_callback, interactive)
     end
 
     function NetworkMgr:getNetworkInterfaceName()

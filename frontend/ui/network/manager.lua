@@ -1,3 +1,4 @@
+local AsyncUtil = require("ui/network/asyncutil")
 local BD = require("ui/bidi")
 local ConfirmBox = require("ui/widget/confirmbox")
 local DataStorage = require("datastorage")
@@ -31,6 +32,18 @@ local NetworkMgr = {
     pending_connection = false,
     _before_action_tripped = nil,
 
+    -- Bumped on every Wi-Fi teardown, to invalidate in-flight async connect steps.
+    _connect_gen = 0,
+
+    -- Timeouts for the async interactive connect flow, in seconds
+    _scan_timeout_s = 30,
+    _auth_timeout_s = 30,
+    _dhcp_timeout_s = 30,
+    _turn_on_timeout_s = 30,
+    -- How long to wait for wpa_supplicant's own background connect
+    -- (like the restore-wifi-async script)
+    _bg_connect_wait_s = 15,
+
     -- SSID for which the current DHCP lease was obtained.
     -- Used by hasLeaseForCurrentNetwork() to detect stale leases after a network switch (#14790).
     lease_ssid = nil,
@@ -42,6 +55,8 @@ end
 
 -- Common chunk of stuff we have to do when aborting a connection attempt
 function NetworkMgr:_abortWifiConnection()
+    -- Invalidate any in-flight async connect steps
+    self._connect_gen = self._connect_gen + 1
     -- Cancel any pending connectivity check, because it wouldn't achieve anything
     self:unscheduleConnectivityCheck()
 
@@ -402,6 +417,8 @@ function NetworkMgr:enableWifi(wifi_cb, interactive)
 end
 
 function NetworkMgr:disableWifi(cb, interactive)
+    -- Invalidate any in-flight async connect steps
+    self._connect_gen = self._connect_gen + 1
     -- DHCP lease is released when Wi-Fi goes down, so the tracked SSID is no longer valid.
     self.lease_ssid = nil
     local complete_callback = function()
@@ -1112,157 +1129,253 @@ function NetworkMgr:getMenuTable(common_settings)
     end
 end
 
-function NetworkMgr:reconnectOrShowNetworkMenu(complete_callback, interactive)
-    local info = InfoMessage:new{text = _("Scanning for networks…")}
+-- Run a device's Wi-Fi hardware bring-up (enable_fn, e.g., the blocking
+-- ./enable-wifi.sh) in a subprocess, then chain into the async connect flow.
+-- Keeps the UI responsive while the radio is being brought up (~5s on MTK Kobos).
+-- We return nil ("pending"), and drive complete_callback / teardown ourselves.
+function NetworkMgr:asyncTurnOnWifi(enable_fn, complete_callback, interactive)
+    local gen = self._connect_gen
+    local info = InfoMessage:new{text = _("Turning on Wi-Fi…")}
     UIManager:show(info)
-    UIManager:forceRePaint()
 
-    local network_list, err = self:getNetworkList()
-    UIManager:close(info)
-    if network_list == nil then
-        UIManager:show(InfoMessage:new{text = err})
-        return false
+    AsyncUtil.subprocessCall(enable_fn, self._turn_on_timeout_s, function(ok)
+        UIManager:close(info)
+        if self._connect_gen ~= gen then return end -- torn down under us
+        if not ok then
+            logger.warn("NetworkMgr: Wi-Fi hardware bring-up failed or timed out")
+            self:_abortWifiConnection()
+            UIManager:show(InfoMessage:new{text = _("Error turning on Wi-Fi"), timeout = 3})
+            return
+        end
+        self:reconnectOrShowNetworkMenu(complete_callback, interactive)
+    end, function()
+        return self._connect_gen ~= gen
+    end)
+
+    return nil
+end
+
+-- Asynchronous variant of the interactive connect flow:
+-- scan, authenticate and DHCP all run off the UI thread (subprocesses + polling),
+-- so the UI stays responsive while the connection is being established.
+-- Stock: true: we're connected; false: things went kablooey; nil: we don't know yet (e.g., interactive)
+-- NOTE: false *will* lead enableWifi to kill Wi-Fi via _abortWifiConnection!
+-- NOTE: We've gone async: we always return nil ("don't know yet"),
+--       and drive complete_callback (via scheduleConnectivityCheck) or
+--       _abortWifiConnection ourselves.
+function NetworkMgr:reconnectOrShowNetworkMenu(complete_callback, interactive)
+    -- Any Wi-Fi teardown invalidates in-flight async steps.
+    local gen = self._connect_gen
+    local function cancelled()
+        return self._connect_gen ~= gen
     end
-    -- NOTE: Fairly hackish workaround for #4387,
-    --       rescan if the first scan appeared to yield an empty list.
-    --- @fixme This *might* be an issue better handled in lj-wpaclient...
-    if #network_list == 0 then
-        logger.warn("Initial Wi-Fi scan yielded no results, rescanning")
-        network_list, err = self:getNetworkList()
-        if network_list == nil then
-            UIManager:show(InfoMessage:new{text = err})
-            return false
+
+    local network_list
+    local info
+
+    local function setInfo(text)
+        if info then
+            UIManager:close(info)
+            info = nil
+        end
+        if text then
+            info = InfoMessage:new{text = text}
+            UIManager:show(info)
         end
     end
 
-    table.sort(network_list,
-        function(l, r) return l.signal_quality > r.signal_quality end)
+    local function finish(success, ssid, err_msg)
+        if cancelled() then return end
+        setInfo(nil)
 
-    -- true: we're connected; false: things went kablooey; nil: we don't know yet (e.g., interactive)
-    -- NOTE: false *will* lead enableWifi to kill Wi-Fi via _abortWifiConnection!
-    local success
-    local ssid
-    -- We need to do two passes, as we may have *both* an already connected network (from the global wpa config),
-    -- *and* preferred networks, and if the preferred networks have a better signal quality,
-    -- they'll be sorted *earlier*, which would cause us to try to associate to a different AP than
-    -- what wpa_supplicant is already trying to do...
-    -- NOTE: We can't really skip this, even when we force showing the scan list,
-    --       as the backend *will* connect in the background regardless of what we do,
-    --       and we *need* our complete_callback to run,
-    --       which would not be the case if we were to just dismiss the scan list,
-    --       especially since it wouldn't show as "connected" in this case...
-    for dummy, network in ipairs(network_list) do
-        if network.connected then
-            -- On platforms where we use wpa_supplicant (if we're calling this, we probably are),
-            -- the invocation will check its global config, and if an AP configured there is reachable,
-            -- it'll already have connected to it on its own.
-            success = true
-            ssid = network.ssid
-            break
+        if success then
+            -- Record the SSID we just obtained a lease for, so hasLeaseForCurrentNetwork()
+            -- can detect a future network switch without triggering unnecessary re-DHCPs (#14790).
+            self.lease_ssid = ssid
+            logger.dbg("NetworkMgr: lease_ssid set to", ssid)
+            if complete_callback then
+                complete_callback()
+            end
+            -- NOTE: On Kindle, we don't have an explicit obtainIP implementation,
+            --       and authenticateNetwork is async,
+            --       so we don't *actually* have a full connection yet,
+            --       we've just *started* connecting to the requested network...
+            UIManager:show(InfoMessage:new{
+                tag = "NetworkMgr", -- for crazy KOSync purposes
+                text = T(_(Device:isKindle() and "Connecting to network %1…" or "Connected to network %1"), BD.wrap(util.fixUtf8(ssid, "�"))),
+                timeout = 3,
+            })
+            logger.dbg("NetworkMgr: Connected to network", util.fixUtf8(ssid, "�"))
+            if self.wifi_toggle_long_press then
+                -- Success, but we asked for the list, show it w/o any callbacks.
+                -- (We *could* potentially setup a pair of callbacks that just send Network* events, but it's probably not worth it).
+                UIManager:show(require("ui/widget/networksetting"):new{
+                    network_list = network_list,
+                })
+            end
+        else
+            err_msg = err_msg or _("Connection failed")
+            UIManager:show(InfoMessage:new{
+                text = err_msg,
+                timeout = 3,
+            })
+            logger.dbg("NetworkMgr: Failed to connect:", err_msg, "; last attempt on ssid:", ssid and util.fixUtf8(ssid, "�") or "<none>")
+            -- NOTE: Also supports a disconnect_callback, should we use it for something?
+            --       Tearing down Wi-Fi completely when tapping "disconnect" would feel a bit harsh, though...
+            if interactive and network_list then
+                -- We don't want to display the AP list for non-interactive callers (e.g., beforeWifiAction framework)...
+                UIManager:show(require("ui/widget/networksetting"):new{
+                    network_list = network_list,
+                    connect_callback = complete_callback,
+                })
+            else
+                -- Let enableWifi tear it all down when we're non-interactive
+                -- NOTE: We've gone async, so enableWifi can't (we already returned nil):
+                --       tear it down ourselves, like it would have on a `false` return.
+                self:_abortWifiConnection()
+            end
         end
+
+        self.wifi_toggle_long_press = nil
+    end
+
+    -- Kindle's authenticateNetwork is async: association & DHCP are wifid's business.
+    local async_auth = Device:isKindle()
+
+    local function obtainIPThenFinish(ssid, network)
+        if network then
+            network.connected = true
+        end
+        if async_auth then
+            return finish(true, ssid)
+        end
+        setInfo(_("Connecting to Wi-Fi…"))
+        AsyncUtil.subprocessCall(function() return self:obtainIP() end, self._dhcp_timeout_s,
+            function(ok)
+                finish(ok, ssid, not ok and _("Error connecting to the network") or nil)
+            end, cancelled)
     end
 
     -- Next, look for our own preferred networks...
-    local err_msg = _("Connection failed")
-    if not success then
-        for dummy, network in ipairs(network_list) do
-            if network.password then
+    local function tryPreferred(idx)
+        if cancelled() then return end
+        local network, i = nil, idx
+        while i <= #network_list do
+            if network_list[i].password then
                 -- If we hit a preferred network and we're not already connected,
                 -- attempt to connect to said preferred network....
-                logger.dbg("NetworkMgr: Attempting to authenticate on preferred network", util.fixUtf8(network.ssid, "�"))
-                success, err_msg = self:authenticateNetwork(network)
-                if success then
-                    ssid = network.ssid
-                    network.connected = true
-                    break
-                else
-                    logger.dbg("NetworkMgr: authentication failed:", err_msg)
-                end
+                network = network_list[i]
+                break
             end
+            i = i + 1
         end
-    end
 
-    -- If we haven't even seen any of our preferred networks, wait a bit to see if wpa_supplicant manages to connect in the background anyway...
-    -- This happens when we break too early from re-scans triggered by wpa_supplicant itself,
-    -- which shouldn't really ever happen since https://github.com/koreader/lj-wpaclient/pull/11
-    -- c.f., WpaClient:scanThenGetResults in lj-wpaclient for more details.
-    if Device:hasWifiManager() and not success and not ssid then
-        -- Don't bother if wpa_supplicant doesn't actually have any configured networks...
-        local configured_networks = self:getConfiguredNetworks()
-        local has_preferred_networks = configured_networks and #configured_networks > 0
-
-        local iter = has_preferred_networks and 0 or 60
-        -- We wait 15s at most (like the restore-wifi-async script)
-        while not success and iter < 60 do
+        if not network then
+            -- If we haven't even seen any of our preferred networks, wait a bit to see if wpa_supplicant manages to connect in the background anyway...
+            -- This happens when we break too early from re-scans triggered by wpa_supplicant itself,
+            -- which shouldn't really ever happen since https://github.com/koreader/lj-wpaclient/pull/11
+            -- c.f., WpaClient:scanThenGetResults in lj-wpaclient for more details.
+            -- Don't bother if wpa_supplicant doesn't actually have any configured networks...
+            local configured_networks = Device:hasWifiManager() and self:getConfiguredNetworks()
+            local has_preferred_networks = configured_networks and #configured_networks > 0
+            if not has_preferred_networks then
+                return finish(false)
+            end
+            setInfo(_("Waiting for network connectivity…"))
+            -- We wait 15s at most (like the restore-wifi-async script)
             -- Check every 250ms
-            iter = iter + 1
-            ffiutil.usleep(250 * 1e+3)
-
-            local nw = self:getCurrentNetwork()
-            if nw then
-                success = true
-                ssid = nw.ssid
-                -- Flag it as connected in the list
-                for dummy, network in ipairs(network_list) do
-                    if ssid == network.ssid then
-                        network.connected = true
+            AsyncUtil.pollUntil(function() return self:getCurrentNetwork() end, self._bg_connect_wait_s,
+                function(nw)
+                    if nw then
+                        obtainIPThenFinish(nw.ssid)
+                    else
+                        finish(false)
                     end
+                end, cancelled)
+            return
+        end
+
+        logger.dbg("NetworkMgr: Attempting to authenticate on preferred network", util.fixUtf8(network.ssid, "�"))
+        setInfo(_("Authenticating…"))
+
+        -- Fast, event-free setup + association polling on wpa_supplicant;
+        -- async-auth backends (e.g., Kindle) connect via their own daemon.
+        local nw_id, err
+        if self.setupNetworkAuthentication then
+            nw_id, err = self:setupNetworkAuthentication(network)
+        else
+            nw_id, err = self:authenticateNetwork(network)
+        end
+        if not nw_id then
+            logger.dbg("NetworkMgr: authentication failed:", err)
+            return tryPreferred(i + 1)
+        end
+        if async_auth then
+            return obtainIPThenFinish(network.ssid, network)
+        end
+
+        AsyncUtil.pollUntil(function() return self:getCurrentNetwork() end, self._auth_timeout_s,
+            function(nw)
+                if cancelled() then return end
+                if nw then
+                    network.wpa_supplicant_id = nw.id or nw_id
+                    obtainIPThenFinish(network.ssid, network)
+                else
+                    logger.dbg("NetworkMgr: authentication timed out on", util.fixUtf8(network.ssid, "�"))
+                    -- Remove the dead network entry before trying the next one
+                    self:disconnectNetwork({ wpa_supplicant_id = nw_id })
+                    tryPreferred(i + 1)
                 end
-                logger.dbg("NetworkMgr: wpa_supplicant automatically connected to network", util.fixUtf8(ssid, "�"), "(after", iter * 0.25, "seconds)")
+            end, cancelled)
+    end
+
+    setInfo(_("Scanning for networks…"))
+
+    local function onScan(list, err)
+        if cancelled() then return end
+        if list == nil then
+            return finish(false, nil, err)
+        end
+        network_list = list
+        table.sort(network_list,
+            function(l, r) return l.signal_quality > r.signal_quality end)
+
+        -- We need to do two passes, as we may have *both* an already connected network (from the global wpa config),
+        -- *and* preferred networks, and if the preferred networks have a better signal quality,
+        -- they'll be sorted *earlier*, which would cause us to try to associate to a different AP than
+        -- what wpa_supplicant is already trying to do...
+        -- NOTE: We can't really skip this, even when we force showing the scan list,
+        --       as the backend *will* connect in the background regardless of what we do,
+        --       and we *need* our complete_callback to run,
+        --       which would not be the case if we were to just dismiss the scan list,
+        --       especially since it wouldn't show as "connected" in this case...
+        for _, network in ipairs(network_list) do
+            if network.connected then
+                -- On platforms where we use wpa_supplicant (if we're calling this, we probably are),
+                -- the invocation will check its global config, and if an AP configured there is reachable,
+                -- it'll already have connected to it on its own.
+                return obtainIPThenFinish(network.ssid, network)
             end
         end
+
+        tryPreferred(1)
     end
 
-    if success then
-        self:obtainIP()
-        -- Record the SSID we just obtained a lease for, so hasLeaseForCurrentNetwork()
-        -- can detect a future network switch without triggering unnecessary re-DHCPs (#14790).
-        self.lease_ssid = ssid
-        logger.dbg("NetworkMgr: lease_ssid set to", ssid)
-        if complete_callback then
-            complete_callback()
-        end
-        -- NOTE: On Kindle, we don't have an explicit obtainIP implementation,
-        --       and authenticateNetwork is async,
-        --       so we don't *actually* have a full connection yet,
-        --       we've just *started* connecting to the requested network...
-        UIManager:show(InfoMessage:new{
-            tag = "NetworkMgr", -- for crazy KOSync purposes
-            text = T(_(Device:isKindle() and "Connecting to network %1…" or "Connected to network %1"), BD.wrap(util.fixUtf8(ssid, "�"))),
-            timeout = 3,
-        })
-        logger.dbg("NetworkMgr: Connected to network", util.fixUtf8(ssid, "�"))
-    else
-        UIManager:show(InfoMessage:new{
-            text = err_msg,
-            timeout = 3,
-        })
-        logger.dbg("NetworkMgr: Failed to connect:", err_msg, "; last attempt on ssid:", ssid and util.fixUtf8(ssid, "�") or "<none>")
-    end
+    AsyncUtil.subprocessCall(function() return self:getNetworkList() end, self._scan_timeout_s,
+        function(ok, list, err)
+            if cancelled() then return end
+            if ok and list and #list == 0 then
+                -- NOTE: Fairly hackish workaround for #4387,
+                --       rescan if the first scan appeared to yield an empty list.
+                --- @fixme This *might* be an issue better handled in lj-wpaclient...
+                logger.warn("Initial Wi-Fi scan yielded no results, rescanning")
+                AsyncUtil.subprocessCall(function() return self:getNetworkList() end, self._scan_timeout_s, onScan, cancelled)
+            else
+                onScan(ok and list or nil, err)
+            end
+        end, cancelled)
 
-    if not success then
-        -- NOTE: Also supports a disconnect_callback, should we use it for something?
-        --       Tearing down Wi-Fi completely when tapping "disconnect" would feel a bit harsh, though...
-        if interactive then
-            -- We don't want to display the AP list for non-interactive callers (e.g., beforeWifiAction framework)...
-            UIManager:show(require("ui/widget/networksetting"):new{
-                network_list = network_list,
-                connect_callback = complete_callback,
-            })
-        else
-            -- Let enableWifi tear it all down when we're non-interactive
-            success = false
-        end
-    elseif self.wifi_toggle_long_press then
-        -- Success, but we asked for the list, show it w/o any callbacks.
-        -- (We *could* potentially setup a pair of callbacks that just send Network* events, but it's probably not worth it).
-        UIManager:show(require("ui/widget/networksetting"):new{
-            network_list = network_list,
-        })
-    end
-
-    self.wifi_toggle_long_press = nil
-    return success
+    return nil
 end
 
 function NetworkMgr:saveNetwork(setting)

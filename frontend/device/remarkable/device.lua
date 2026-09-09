@@ -369,12 +369,13 @@ function Remarkable:supportsScreensaver() return true end
 
 function Remarkable:initNetworkManager(NetworkMgr)
     function NetworkMgr:turnOnWifi(complete_callback, interactive)
-        if has_csl then
-            os.execute("/usr/bin/csl wifi -p on")
-        else
-            os.execute("./enable-wifi.sh")
-        end
-        return self:reconnectOrShowNetworkMenu(complete_callback, interactive)
+        return self:asyncTurnOnWifi(function()
+            if has_csl then
+                os.execute("/usr/bin/csl wifi -p on")
+            else
+                os.execute("./enable-wifi.sh")
+            end
+        end, complete_callback, interactive)
     end
 
     function NetworkMgr:turnOffWifi(complete_callback)

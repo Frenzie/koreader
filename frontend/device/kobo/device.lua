@@ -1026,8 +1026,9 @@ function Kobo:initNetworkManager(NetworkMgr)
     end
 
     function NetworkMgr:turnOnWifi(complete_callback, interactive)
-        koboEnableWifi(true)
-        return self:reconnectOrShowNetworkMenu(complete_callback, interactive)
+        -- enable-wifi.sh blocks for several seconds (module loading + hard-coded
+        -- sleeps), so run the bring-up in a subprocess to keep the UI responsive.
+        return self:asyncTurnOnWifi(function() koboEnableWifi(true) end, complete_callback, interactive)
     end
 
     local net_if = os.getenv("INTERFACE") or "eth0"
