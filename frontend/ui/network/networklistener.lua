@@ -42,6 +42,22 @@ function NetworkListener:_showWifiIcon(icon_name)
     if not NetworkMgr:isWifiStatusDiscreet() then
         return
     end
+    -- Broadcasts reach *both* UIs' listener instances (the FM stays registered
+    -- under the Reader), so only handle them when our UI is actually the active
+    -- one, lest we double-handle the event and stack a toast over the Reader.
+    if self.ui.view and self.ui.view.flipping then
+        self:_updateWifiIcon(icon_name)
+        return
+    end
+    local FileManager = require("apps/filemanager/filemanager")
+    if FileManager.instance ~= self.ui then
+        return
+    end
+    self:_updateWifiIcon(icon_name)
+end
+
+-- Terminal states (icon ~= ICON_CONNECTING) hide themselves after a few seconds.
+function NetworkListener:_updateWifiIcon(icon_name)
     NetworkListener._wifi_icon_shown = icon_name
     if icon_name and icon_name ~= ICON_CONNECTING then
         UIManager:scheduleIn(ICON_TIMEOUT_S, function()

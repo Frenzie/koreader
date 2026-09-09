@@ -67,6 +67,8 @@ function NetworkMgr:_abortWifiConnection()
     UIManager:broadcastEvent(Event:new("NetworkConnectFailed"))
     -- Cancel any pending connectivity check, because it wouldn't achieve anything
     self:unscheduleConnectivityCheck()
+    -- A cancelled attempt can't pop the list at the end of the flow
+    self.wifi_toggle_long_press = nil
 
     self.wifi_was_on = false
     G_reader_settings:makeFalse("wifi_was_on")
@@ -442,6 +444,9 @@ function NetworkMgr:disableWifi(cb, interactive)
     -- NOTE: This is a subset of _abortWifiConnection, in case we disable wifi during a connection attempt.
     -- Cancel any pending connectivity check, because it wouldn't achieve anything
     self:unscheduleConnectivityCheck()
+    -- A disconnect during a connection attempt cancels it, and the flow's
+    -- cancelled() early-returns can no longer pop the list at its end
+    self.wifi_toggle_long_press = nil
     -- Make sure we don't have an async script running...
     if Device:hasWifiRestore() and not Device:isKindle() then
         os.execute("pkill -TERM restore-wifi-async.sh 2>/dev/null")
