@@ -247,7 +247,11 @@ function NetworkItem:connect()
     end
 
     self:refresh()
-    UIManager:show(InfoMessage:new{text = text, timeout = 3})
+    -- Discreet Wi-Fi status: the corner icon already reports success
+    -- (see NetworkListener); failures stay visible, they need the details.
+    if not (success and NetworkMgr:isWifiStatusDiscreet()) then
+        UIManager:show(InfoMessage:new{text = text, timeout = 3})
+    end
 end
 
 function NetworkItem:disconnect()
@@ -501,10 +505,12 @@ function NetworkSetting:init()
             if G_reader_settings:nilOrTrue("auto_dismiss_wifi_scan") then
                 UIManager:close(self)
             end
-            UIManager:show(InfoMessage:new{
-                text = T(_("Connected to network %1"), BD.wrap(connected_item.display_ssid)),
-                timeout = 3,
-            })
+            if not NetworkMgr:isWifiStatusDiscreet() then
+                UIManager:show(InfoMessage:new{
+                    text = T(_("Connected to network %1"), BD.wrap(connected_item.display_ssid)),
+                    timeout = 3,
+                })
+            end
             self.connect_callback()
         end
     end)

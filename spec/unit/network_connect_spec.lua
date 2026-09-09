@@ -204,3 +204,58 @@ describe("NetworkMgr:async connect flow", function()
         package.loaded["ui/network/manager"] = nil
     end)
 end)
+
+describe("NetworkMgr: discreet Wi-Fi status", function()
+    local NetworkMgr, UIManager
+
+    setup(function()
+        require("commonrequire")
+        UIManager = require("ui/uimanager")
+        local Device = require("device")
+        function Device:initNetworkManager(mgr)
+            function mgr:turnOnWifi() end
+            function mgr:turnOffWifi() end
+            function mgr:obtainIP() end
+            function mgr:releaseIP() end
+            function mgr:restoreWifiAsync() end
+        end
+        function Device:hasWifiRestore() return false end
+        function Device:hasWifiManager() return true end
+    end)
+
+    before_each(function()
+        package.loaded["ui/network/manager"] = nil
+        G_reader_settings:delSetting("discreet_wifi_status")
+        NetworkMgr = require("ui/network/manager")
+    end)
+
+    after_each(function()
+        G_reader_settings:delSetting("discreet_wifi_status")
+        package.loaded["ui/network/manager"] = nil
+    end)
+
+    it("defaults to enabled", function()
+        assert.is_truthy(NetworkMgr:isWifiStatusDiscreet())
+    end)
+
+    it("can be toggled off", function()
+        G_reader_settings:makeFalse("discreet_wifi_status")
+        assert.is_false(NetworkMgr:isWifiStatusDiscreet())
+        G_reader_settings:makeTrue("discreet_wifi_status")
+        assert.is_truthy(NetworkMgr:isWifiStatusDiscreet())
+    end)
+
+    it("broadcasts NetworkConnectFailed on abort", function()
+        local failed = false
+        -- Intercept the broadcast without touching the window stack
+        local broadcastEvent = UIManager.broadcastEvent
+        UIManager.broadcastEvent = function(self, event)
+            if event.handler == "onNetworkConnectFailed" then
+                failed = true
+            end
+        end
+        NetworkMgr:_abortWifiConnection()
+        UIManager.broadcastEvent = broadcastEvent
+        assert.is_true(failed)
+    end)
+end)

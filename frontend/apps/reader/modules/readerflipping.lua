@@ -1,6 +1,8 @@
 local Geom = require("ui/geometry")
 local IconWidget = require("ui/widget/iconwidget")
 local LeftContainer = require("ui/widget/container/leftcontainer")
+local Size = require("ui/size")
+local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local Screen = require("device").screen
 
@@ -48,6 +50,33 @@ end
 function ReaderFlipping:resetLayout()
     -- NOTE: LeftContainer aligns to the left of its *own* width (and will handle RTL mirroring, so we can't cheat)...
     self[1].dimen.w = Screen:getWidth()
+end
+
+-- Wi-Fi status icon (discreet connect feedback): shown below the other
+-- icons when one of them is active, and refreshed with a partial "ui"
+-- repaint of the corner region, like the rerendering state icons.
+function ReaderFlipping:getWifiRefreshRegion()
+    -- Conservative region covering both rows (ours and theirs), so state
+    -- changes on either side erase and repaint each other cleanly.
+    local w = math.max(self[1][1]:getSize().w, Screen:scaleBySize(32))
+    local h = self[1].dimen.h + Size.span.horizontal_default + Screen:scaleBySize(32)
+    return Geom:new{x = 0, y = 0, w = w, h = h}
+end
+
+function ReaderFlipping:setWifiStateIcon(icon_name)
+    if icon_name then
+        if not self.wifi_state_widget or self.wifi_state_widget.icon ~= icon_name then
+            self.wifi_state_widget = IconWidget:new{
+                icon = icon_name,
+                width = Screen:scaleBySize(32),
+                height = Screen:scaleBySize(32),
+                alpha = true, -- so bits of text stay visible underneath, like the other icons
+            }
+        end
+    else
+        self.wifi_state_widget = nil
+    end
+    UIManager:setDirty(self.view.dialog, "ui", self:getWifiRefreshRegion())
 end
 
 function ReaderFlipping:getRefreshRegion()
@@ -111,6 +140,10 @@ function ReaderFlipping:paintTo(bb, x, y)
             self[1][1] = widget
         end
         WidgetContainer.paintTo(self, bb, x, y)
+    end
+    if self.wifi_state_widget then
+        -- Below the other icon when one is shown, at the top left otherwise
+        self.wifi_state_widget:paintTo(bb, x, y + (widget and self[1][1]:getSize().h + Size.span.horizontal_default or 0))
     end
 end
 

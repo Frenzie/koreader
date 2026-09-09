@@ -53,10 +53,18 @@ function NetworkMgr:readNWSettings()
     self.nw_settings = LuaSettings:open(DataStorage:getSettingsDir().."/network.lua")
 end
 
+-- Whether transient Wi-Fi popups should be replaced by a discreet corner
+-- icon (see NetworkListener, which handles the icon itself).
+function NetworkMgr:isWifiStatusDiscreet()
+    return G_reader_settings:nilOrTrue("discreet_wifi_status")
+end
+
 -- Common chunk of stuff we have to do when aborting a connection attempt
 function NetworkMgr:_abortWifiConnection()
     -- Invalidate any in-flight async connect steps
     self._connect_gen = self._connect_gen + 1
+    -- Let the discreet Wi-Fi status icon know the attempt failed (see NetworkListener)
+    UIManager:broadcastEvent(Event:new("NetworkConnectFailed"))
     -- Cancel any pending connectivity check, because it wouldn't achieve anything
     self:unscheduleConnectivityCheck()
 
@@ -103,7 +111,9 @@ function NetworkMgr:connectivityCheck(iter, callback, widget)
         -- Handle the UI warning if it's from a beforeWifiAction...
         if widget then
             UIManager:close(widget)
-            UIManager:show(InfoMessage:new{ text = _("Error connecting to the network") })
+            if not self:isWifiStatusDiscreet() then
+                UIManager:show(InfoMessage:new{ text = _("Error connecting to the network") })
+            end
         end
         return
     end
@@ -132,7 +142,7 @@ function NetworkMgr:connectivityCheck(iter, callback, widget)
         else
             -- If this trickled down from a turn_onbeforeWifiAction and there is no callback,
             -- mention that the action needs to be retried manually.
-            if widget then
+            if widget and not self:isWifiStatusDiscreet() then
                 UIManager:show(InfoMessage:new{
                     text = _("You can now retry the action that required network access"),
                     timeout = 3,
@@ -448,29 +458,39 @@ function NetworkMgr:disableWifi(cb, interactive)
 end
 
 function NetworkMgr:toggleWifiOn(complete_callback, long_press, interactive)
-    local toggle_im = InfoMessage:new{
-        text = _("Turning on Wi-Fi…"),
-    }
-    UIManager:show(toggle_im)
-    UIManager:forceRePaint()
+    local toggle_im
+    if not self:isWifiStatusDiscreet() then
+        toggle_im = InfoMessage:new{
+            text = _("Turning on Wi-Fi…"),
+        }
+        UIManager:show(toggle_im)
+        UIManager:forceRePaint()
+    end
 
     self.wifi_toggle_long_press = long_press
 
     self:enableWifi(complete_callback, interactive)
 
-    UIManager:close(toggle_im)
+    if toggle_im then
+        UIManager:close(toggle_im)
+    end
 end
 
 function NetworkMgr:toggleWifiOff(complete_callback, interactive)
-    local toggle_im = InfoMessage:new{
-        text = _("Turning off Wi-Fi…"),
-    }
-    UIManager:show(toggle_im)
-    UIManager:forceRePaint()
+    local toggle_im
+    if not self:isWifiStatusDiscreet() then
+        toggle_im = InfoMessage:new{
+            text = _("Turning off Wi-Fi…"),
+        }
+        UIManager:show(toggle_im)
+        UIManager:forceRePaint()
+    end
 
     self:disableWifi(complete_callback, interactive)
 
-    UIManager:close(toggle_im)
+    if toggle_im then
+        UIManager:close(toggle_im)
+    end
 end
 
 -- NOTE: Only used by the beforeWifiAction framework, so, can never be flagged as "interactive" ;).
@@ -553,9 +573,14 @@ function NetworkMgr:turnOnWifiAndWaitForConnection(callback)
         -- fall through — no return
     end
 
-    local info = InfoMessage:new{ text = _("Connecting to Wi-Fi…") }
-    UIManager:show(info)
-    UIManager:forceRePaint()
+    -- NOTE: The widget is still passed to scheduleConnectivityCheck in discreet
+    --       mode (closing a never-shown widget is a no-op), so error handling keeps working.
+    local info
+    if not self:isWifiStatusDiscreet() then
+        info = InfoMessage:new{ text = _("Connecting to Wi-Fi…") }
+        UIManager:show(info)
+        UIManager:forceRePaint()
+    end
 
     -- NOTE: This is a slightly tweaked variant of enableWifi, in order to handle our info widget...
     local connectivity_cb = function()
@@ -892,7 +917,9 @@ function NetworkMgr:goOnlineToRun(callback)
         -- We're not connected :(
         logger.info("Failed to connect to Wi-Fi after", iter * 0.25, "seconds, giving up!")
         self:_abortWifiConnection()
-        UIManager:show(InfoMessage:new{ text = _("Error connecting to the network") })
+        if not self:isWifiStatusDiscreet() then
+            UIManager:show(InfoMessage:new{ text = _("Error connecting to the network") })
+        end
     end
     -- We're done, reset the pending connection flag, as we don't have any scheduled connectivity check to do it for us.
     self.pending_connection = false
@@ -1124,9 +1151,20 @@ function NetworkMgr:getMenuTable(common_settings)
         common_settings.network_dismiss_scan = self:getDismissScanMenuTable()
     end
     if Device:hasWifiToggle() then
+        common_settings.network_discreet_status = self:getDiscreetStatusMenuTable()
         common_settings.network_before_wifi_action = self:getBeforeWifiActionMenuTable()
         common_settings.network_after_wifi_action = self:getAfterWifiActionMenuTable()
     end
+end
+
+function NetworkMgr:getDiscreetStatusMenuTable()
+    return {
+        text = _("Discreet Wi-Fi status"),
+        help_text = _(
+            "Replace the transient Wi-Fi connect and disconnect popups with a small status icon in the top left corner."),
+        checked_func = function() return self:isWifiStatusDiscreet() end,
+        callback = function() G_reader_settings:flipNilOrTrue("discreet_wifi_status") end,
+    }
 end
 
 -- Run a device's Wi-Fi hardware bring-up (enable_fn, e.g., the blocking
@@ -1135,16 +1173,23 @@ end
 -- We return nil ("pending"), and drive complete_callback / teardown ourselves.
 function NetworkMgr:asyncTurnOnWifi(enable_fn, complete_callback, interactive)
     local gen = self._connect_gen
-    local info = InfoMessage:new{text = _("Turning on Wi-Fi…")}
-    UIManager:show(info)
+    local info
+    if not self:isWifiStatusDiscreet() then
+        info = InfoMessage:new{text = _("Turning on Wi-Fi…")}
+        UIManager:show(info)
+    end
 
     AsyncUtil.subprocessCall(enable_fn, self._turn_on_timeout_s, function(ok)
-        UIManager:close(info)
+        if info then
+            UIManager:close(info)
+        end
         if self._connect_gen ~= gen then return end -- torn down under us
         if not ok then
             logger.warn("NetworkMgr: Wi-Fi hardware bring-up failed or timed out")
             self:_abortWifiConnection()
-            UIManager:show(InfoMessage:new{text = _("Error turning on Wi-Fi"), timeout = 3})
+            if not self:isWifiStatusDiscreet() then
+                UIManager:show(InfoMessage:new{text = _("Error turning on Wi-Fi"), timeout = 3})
+            end
             return
         end
         self:reconnectOrShowNetworkMenu(complete_callback, interactive)
@@ -1174,6 +1219,10 @@ function NetworkMgr:reconnectOrShowNetworkMenu(complete_callback, interactive)
     local info
 
     local function setInfo(text)
+        if self:isWifiStatusDiscreet() then
+            -- The discreet status icon (see NetworkListener) already covers this
+            return
+        end
         if info then
             UIManager:close(info)
             info = nil
@@ -1200,11 +1249,13 @@ function NetworkMgr:reconnectOrShowNetworkMenu(complete_callback, interactive)
             --       and authenticateNetwork is async,
             --       so we don't *actually* have a full connection yet,
             --       we've just *started* connecting to the requested network...
-            UIManager:show(InfoMessage:new{
-                tag = "NetworkMgr", -- for crazy KOSync purposes
-                text = T(_(Device:isKindle() and "Connecting to network %1…" or "Connected to network %1"), BD.wrap(util.fixUtf8(ssid, "�"))),
-                timeout = 3,
-            })
+            if not self:isWifiStatusDiscreet() then
+                UIManager:show(InfoMessage:new{
+                    tag = "NetworkMgr", -- for crazy KOSync purposes
+                    text = T(_(Device:isKindle() and "Connecting to network %1…" or "Connected to network %1"), BD.wrap(util.fixUtf8(ssid, "�"))),
+                    timeout = 3,
+                })
+            end
             logger.dbg("NetworkMgr: Connected to network", util.fixUtf8(ssid, "�"))
             if self.wifi_toggle_long_press then
                 -- Success, but we asked for the list, show it w/o any callbacks.
@@ -1215,10 +1266,12 @@ function NetworkMgr:reconnectOrShowNetworkMenu(complete_callback, interactive)
             end
         else
             err_msg = err_msg or _("Connection failed")
-            UIManager:show(InfoMessage:new{
-                text = err_msg,
-                timeout = 3,
-            })
+            if not self:isWifiStatusDiscreet() then
+                UIManager:show(InfoMessage:new{
+                    text = err_msg,
+                    timeout = 3,
+                })
+            end
             logger.dbg("NetworkMgr: Failed to connect:", err_msg, "; last attempt on ssid:", ssid and util.fixUtf8(ssid, "�") or "<none>")
             -- NOTE: Also supports a disconnect_callback, should we use it for something?
             --       Tearing down Wi-Fi completely when tapping "disconnect" would feel a bit harsh, though...

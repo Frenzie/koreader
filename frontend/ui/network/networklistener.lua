@@ -2,12 +2,25 @@ local BD = require("ui/bidi")
 local Device = require("device")
 local EventListener = require("ui/widget/eventlistener")
 local Font = require("ui/font")
+local IconToast = require("ui/widget/icontoast")
 local InfoMessage = require("ui/widget/infomessage")
 local NetworkMgr = require("ui/network/manager")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local _ = require("gettext")
 local T = require("ffi/util").template
+
+local Screen = Device.screen
+
+-- Discreet Wi-Fi status icons, shown instead of the connect popups
+-- (see NetworkMgr:isWifiStatusDiscreet).
+local ICON_CONNECTED = "wifi.open.100"
+local ICON_CONNECTING = "wifi.open.50"
+local ICON_DISCONNECTED = "wifi.open.0"
+-- How long a terminal state icon stays around (like the popups it replaces)
+local ICON_TIMEOUT_S = 3
+-- Gap between the icon and whatever it sits next to (e.g., the FM home button)
+local ICON_GAP = 4
 
 local NetworkListener = EventListener:extend{
     -- Class members, because we want the activity check to be cross-instance...
@@ -20,35 +33,90 @@ if not Device:hasWifiToggle() then
     return NetworkListener
 end
 
+-- Show the discreet Wi-Fi status icon: as a Reader overlay when we're in
+-- the reader (self.ui.view.flipping), and as a small corner toast otherwise.
+-- Terminal states (icon ~= ICON_CONNECTING) hide themselves after a few seconds.
+NetworkListener._wifi_icon_shown = nil -- class member: last icon shown, for hide scheduling
+
+function NetworkListener:_showWifiIcon(icon_name)
+    if not NetworkMgr:isWifiStatusDiscreet() then
+        return
+    end
+    NetworkListener._wifi_icon_shown = icon_name
+    if icon_name and icon_name ~= ICON_CONNECTING then
+        UIManager:scheduleIn(ICON_TIMEOUT_S, function()
+            -- Don't erase a newer state that may have been shown in between
+            if NetworkListener._wifi_icon_shown == icon_name then
+                self:_showWifiIcon(nil)
+            end
+        end)
+    end
+    if self.ui.view and self.ui.view.flipping then
+        self.ui.view.flipping:setWifiStateIcon(icon_name)
+    else
+        -- In the file manager, keep clear of the home button in the title bar
+        -- (no RTL override needed: mirrored, the home button is on the other side)
+        local x
+        if not BD.mirroredUILayout() then
+            local title_bar = self.ui.title_bar
+            if title_bar and title_bar.left_button then
+                local lb = title_bar.left_button
+                x = lb.padding_left + lb.image:getSize().w + Screen:scaleBySize(ICON_GAP)
+            end
+        end
+        IconToast:show(icon_name, nil, x)
+    end
+end
+
+function NetworkListener:onNetworkConnecting()
+    self:_showWifiIcon(ICON_CONNECTING)
+end
+
+function NetworkListener:onNetworkConnectFailed()
+    self:_showWifiIcon(ICON_DISCONNECTED)
+end
+
 local function enableWifi()
-    local toggle_im = InfoMessage:new{
-        text = _("Turning on Wi-Fi…"),
-    }
-    UIManager:show(toggle_im)
-    UIManager:forceRePaint()
+    local toggle_im
+    if not NetworkMgr:isWifiStatusDiscreet() then
+        toggle_im = InfoMessage:new{
+            text = _("Turning on Wi-Fi…"),
+        }
+        UIManager:show(toggle_im)
+        UIManager:forceRePaint()
+    end
 
     -- NB Normal widgets should use NetworkMgr:promptWifiOn()
     -- (or, better yet, the NetworkMgr:beforeWifiAction wrappers: NetworkMgr:runWhenOnline() & co.)
     -- This is specifically the toggle Wi-Fi action, so consent is implied.
     NetworkMgr:enableWifi(nil, true) -- flag it as interactive
 
-    UIManager:close(toggle_im)
+    if toggle_im then
+        UIManager:close(toggle_im)
+    end
 end
 
 local function disableWifi()
-    local toggle_im = InfoMessage:new{
-        text = _("Turning off Wi-Fi…"),
-    }
-    UIManager:show(toggle_im)
-    UIManager:forceRePaint()
+    local toggle_im
+    if not NetworkMgr:isWifiStatusDiscreet() then
+        toggle_im = InfoMessage:new{
+            text = _("Turning off Wi-Fi…"),
+        }
+        UIManager:show(toggle_im)
+        UIManager:forceRePaint()
+    end
 
     NetworkMgr:disableWifi(nil, true) -- flag it as interactive
 
-    UIManager:close(toggle_im)
-    UIManager:show(InfoMessage:new{
-        text = _("Wi-Fi off."),
-        timeout = 1,
-    })
+    if toggle_im then
+        UIManager:close(toggle_im)
+    end
+    if not NetworkMgr:isWifiStatusDiscreet() then
+        UIManager:show(InfoMessage:new{
+            text = _("Wi-Fi off."),
+            timeout = 1,
+        })
+    end
 end
 
 function NetworkListener:onToggleWifi()
@@ -75,10 +143,14 @@ function NetworkListener:onInfoWifiOn()
         else
             info_text = _("Already connected.")
         end
-        UIManager:show(InfoMessage:new{
-            text = info_text,
-            timeout = 1,
-        })
+        if not NetworkMgr:isWifiStatusDiscreet() then
+            UIManager:show(InfoMessage:new{
+                text = info_text,
+                timeout = 1,
+            })
+        else
+            self:_showWifiIcon(ICON_CONNECTED)
+        end
     end
 end
 
@@ -180,6 +252,7 @@ function NetworkListener:onNetworkConnected()
     -- This is for the sake of events that don't emanate from NetworkMgr itself (e.g., the Emu)...
     NetworkMgr:setWifiState(true)
     NetworkMgr:setConnectionState(true)
+    self:_showWifiIcon(ICON_CONNECTED)
 
     -- You can't set auto_disable_wifi on devices without getNetworkInterfaceName() but guard against it in case it was accidentally set anyway.
     if not NetworkMgr:getNetworkInterfaceName() or not G_reader_settings:isTrue("auto_disable_wifi") then
@@ -195,6 +268,7 @@ function NetworkListener:onNetworkDisconnected()
     logger.dbg("NetworkListener: onNetworkDisconnected")
     NetworkMgr:setWifiState(false)
     NetworkMgr:setConnectionState(false)
+    self:_showWifiIcon(ICON_DISCONNECTED)
 
     NetworkListener:_unscheduleActivityCheck()
     -- Reset NetworkMgr's beforeWifiAction marker
@@ -204,6 +278,14 @@ end
 -- Also unschedule on suspend (and we happen to also kill Wi-Fi to do so, so resetting the stats is also relevant here)
 function NetworkListener:onSuspend()
     logger.dbg("NetworkListener: onSuspend")
+
+    -- Don't leave a stale icon around across suspend
+    NetworkListener._wifi_icon_shown = nil
+    if self.ui.view and self.ui.view.flipping then
+        self.ui.view.flipping:setWifiStateIcon(nil)
+    else
+        IconToast:hide()
+    end
 
     -- If we haven't already (e.g., via Generic's onPowerEvent), kill Wi-Fi.
     -- Do so only on devices where we have explicit management of Wi-Fi: assume the host system does things properly elsewhere.
