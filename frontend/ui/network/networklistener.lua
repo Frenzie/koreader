@@ -34,7 +34,7 @@ if not Device:hasWifiToggle() then
 end
 
 -- Show the discreet Wi-Fi status icon: as a Reader overlay when we're in
--- the reader (self.ui.view.flipping), and as a small corner toast otherwise.
+-- the reader (self.ui.view), and as a small corner toast otherwise.
 -- Terminal states (icon ~= ICON_CONNECTING) hide themselves after a few seconds.
 NetworkListener._wifi_icon_shown = nil -- class member: last icon shown, for hide scheduling
 
@@ -45,12 +45,18 @@ function NetworkListener:_showWifiIcon(icon_name)
     -- Broadcasts reach *both* UIs' listener instances (the FM stays registered
     -- under the Reader), so only handle them when our UI is actually the active
     -- one, lest we double-handle the event and stack a toast over the Reader.
-    if self.ui.view and self.ui.view.flipping then
+    if self.ui.view then
         self:_updateWifiIcon(icon_name)
         return
     end
     local FileManager = require("apps/filemanager/filemanager")
     if FileManager.instance ~= self.ui then
+        return
+    end
+    -- The FM instance stays registered even while a book is open on top of us,
+    -- so make sure we don't toast over the Reader either.
+    local ReaderUI = require("apps/reader/readerui")
+    if ReaderUI.instance then
         return
     end
     self:_updateWifiIcon(icon_name)
@@ -67,7 +73,7 @@ function NetworkListener:_updateWifiIcon(icon_name)
             end
         end)
     end
-    if self.ui.view and self.ui.view.flipping then
+    if self.ui.view then
         self.ui.view.flipping:setWifiStateIcon(icon_name)
     else
         -- In the file manager, keep clear of the home button in the title bar
@@ -268,7 +274,12 @@ function NetworkListener:onNetworkConnected()
     -- This is for the sake of events that don't emanate from NetworkMgr itself (e.g., the Emu)...
     NetworkMgr:setWifiState(true)
     NetworkMgr:setConnectionState(true)
-    self:_showWifiIcon(ICON_CONNECTED)
+    -- Only flash the icon for events that follow a connection attempt
+    -- (see NetworkMgr._connect_attempted), not for the initial state
+    -- broadcast fired when Wi-Fi was already up at startup.
+    if NetworkMgr._connect_attempted then
+        self:_showWifiIcon(ICON_CONNECTED)
+    end
 
     -- You can't set auto_disable_wifi on devices without getNetworkInterfaceName() but guard against it in case it was accidentally set anyway.
     if not NetworkMgr:getNetworkInterfaceName() or not G_reader_settings:isTrue("auto_disable_wifi") then
@@ -295,18 +306,20 @@ end
 function NetworkListener:onSuspend()
     logger.dbg("NetworkListener: onSuspend")
 
-    -- Don't leave a stale icon around across suspend
-    NetworkListener._wifi_icon_shown = nil
-    if self.ui.view and self.ui.view.flipping then
-        self.ui.view.flipping:setWifiStateIcon(nil)
-    else
-        IconToast:hide()
-    end
-
     -- If we haven't already (e.g., via Generic's onPowerEvent), kill Wi-Fi.
     -- Do so only on devices where we have explicit management of Wi-Fi: assume the host system does things properly elsewhere.
     if Device:hasWifiManager() and NetworkMgr:isWifiOn() then
         NetworkMgr:disableWifi()
+    end
+
+    -- Don't leave a stale icon around across suspend
+    -- (NOTE: this must happen *after* the disable above, as the NetworkDisconnected
+    --  event it triggers would otherwise re-show the icon we're trying to clear)
+    NetworkListener._wifi_icon_shown = nil
+    if self.ui.view then
+        self.ui.view.flipping:setWifiStateIcon(nil)
+    else
+        IconToast:hide()
     end
 
     -- Wi-Fi will be down, unschedule unconditionally

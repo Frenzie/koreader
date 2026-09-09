@@ -55,9 +55,11 @@ end
 -- Wi-Fi status icon (discreet connect feedback): shown below the other
 -- icons when one of them is active, and refreshed with a partial "ui"
 -- repaint of the corner region, like the rerendering state icons.
-function ReaderFlipping:getWifiRefreshRegion()
-    -- Conservative region covering both rows (ours and theirs), so state
-    -- changes on either side erase and repaint each other cleanly.
+function ReaderFlipping:getRefreshRegion()
+    -- We can't use self.dimen because of the width/height quirks of Left/RightContainer, so use the IconWidget's...
+    -- Also cover the Wi-Fi icon's row, whether it's the one shown, or when it
+    -- sits below ours, so state changes on either side erase and repaint
+    -- each other cleanly instead of leaving a ghost behind until the next repaint.
     local w = math.max(self[1][1]:getSize().w, Screen:scaleBySize(32))
     local h = self[1].dimen.h + Size.span.horizontal_default + Screen:scaleBySize(32)
     return Geom:new{x = 0, y = 0, w = w, h = h}
@@ -76,12 +78,7 @@ function ReaderFlipping:setWifiStateIcon(icon_name)
     else
         self.wifi_state_widget = nil
     end
-    UIManager:setDirty(self.view.dialog, "ui", self:getWifiRefreshRegion())
-end
-
-function ReaderFlipping:getRefreshRegion()
-    -- We can't use self.dimen because of the width/height quirks of Left/RightContainer, so use the IconWidget's...
-    return self[1][1].dimen
+    UIManager:setDirty(self.view.dialog, "ui", self:getRefreshRegion())
 end
 
 function ReaderFlipping:getRollingRenderingStateIconWidget()

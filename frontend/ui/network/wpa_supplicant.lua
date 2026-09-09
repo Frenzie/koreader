@@ -139,6 +139,8 @@ function WpaSupplicant:authenticateNetwork(network)
 
     wcli, err = WpaClient.new(self.wpa_supplicant.ctrl_interface)
     if not wcli then
+        -- Don't leave the network we just enabled behind
+        self:disconnectNetwork({ wpa_supplicant_id = nw_id })
         return false, T(CLIENT_INIT_ERR_MSG, err)
     end
 

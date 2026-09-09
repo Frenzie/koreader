@@ -32,6 +32,17 @@ local NetworkMgr = {
     pending_connection = false,
     _before_action_tripped = nil,
 
+    -- Widget (e.g., a beforeWifiAction popup) that a running connectivity check
+    -- is responsible for closing, so we can still close it if the check gets
+    -- cancelled before it could complete (c.f., unscheduleConnectivityCheck).
+    _connectivity_widget = nil,
+
+    -- Set once a connection attempt (direct or background restore) has been
+    -- kicked off, so the discreet status icon only shows for NetworkConnected
+    -- events that follow one, and not for e.g. the initial state broadcast
+    -- when Wi-Fi was already up at startup.
+    _connect_attempted = nil,
+
     -- Bumped on every Wi-Fi teardown, to invalidate in-flight async connect steps.
     _connect_gen = 0,
 
@@ -152,6 +163,7 @@ function NetworkMgr:connectivityCheck(iter, callback, widget)
             end
         end
         self.pending_connectivity_check = false
+        self._connectivity_widget = nil
         -- We're done, so we can stop blocking concurrent connection attempts
         self.pending_connection = false
     else
@@ -160,13 +172,23 @@ function NetworkMgr:connectivityCheck(iter, callback, widget)
 end
 
 function NetworkMgr:scheduleConnectivityCheck(callback, widget)
+    -- The check is only ever armed to witness the outcome of a connection attempt
+    self._connect_attempted = true
     self.pending_connectivity_check = true
+    self._connectivity_widget = widget
     UIManager:scheduleIn(0.25, self.connectivityCheck, self, 1, callback, widget)
 end
 
 function NetworkMgr:unscheduleConnectivityCheck()
     UIManager:unschedule(self.connectivityCheck)
     self.pending_connectivity_check = false
+    -- The check was cancelled before it could complete: make sure we don't
+    -- leave a popup it was responsible for behind on screen
+    -- (closing a never-shown widget is a no-op).
+    if self._connectivity_widget then
+        UIManager:close(self._connectivity_widget)
+        self._connectivity_widget = nil
+    end
 end
 
 function NetworkMgr:init()
@@ -586,6 +608,9 @@ function NetworkMgr:turnOnWifiAndWaitForConnection(callback)
         UIManager:show(info)
         UIManager:forceRePaint()
     end
+    -- Remember it, so a mid-flight teardown can close it, even if the
+    -- connectivity check that would normally do so never gets scheduled.
+    self._connectivity_widget = info
 
     -- NOTE: This is a slightly tweaked variant of enableWifi, in order to handle our info widget...
     local connectivity_cb = function()
@@ -606,6 +631,7 @@ function NetworkMgr:turnOnWifiAndWaitForConnection(callback)
         -- We might lose a callback in case the previous attempt wasn't from the same action,
         -- but it's just plain saner to just abort here, as we'd risk calling the same thing over and over...
         UIManager:close(info)
+        self._connectivity_widget = nil
         return
     end
 
@@ -1384,7 +1410,15 @@ function NetworkMgr:reconnectOrShowNetworkMenu(complete_callback, interactive)
             return obtainIPThenFinish(network.ssid, network)
         end
 
-        AsyncUtil.pollUntil(function() return self:getCurrentNetwork() end, self._auth_timeout_s,
+        AsyncUtil.pollUntil(function()
+            local nw = self:getCurrentNetwork()
+            -- Only count the association as ours when it actually is: wpa_supplicant
+            -- may associate with another configured network in the background, and
+            -- recording a lease for the wrong SSID would break stale-lease detection (#14790).
+            if nw and nw.ssid and nw.ssid == network.ssid then
+                return nw
+            end
+        end, self._auth_timeout_s,
             function(nw)
                 if cancelled() then return end
                 if nw then
@@ -1396,7 +1430,15 @@ function NetworkMgr:reconnectOrShowNetworkMenu(complete_callback, interactive)
                     self:disconnectNetwork({ wpa_supplicant_id = nw_id })
                     tryPreferred(i + 1)
                 end
-            end, cancelled)
+            end,
+            function()
+                if cancelled() then
+                    -- Don't leave the enabled network entry behind on cancellation
+                    self:disconnectNetwork({ wpa_supplicant_id = nw_id })
+                    return true
+                end
+                return false
+            end)
     end
 
     setInfo(_("Scanning for networks…"))

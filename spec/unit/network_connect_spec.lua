@@ -36,10 +36,10 @@ describe("NetworkMgr:async connect flow", function()
         end
         function mgr:getCurrentNetwork()
             if assoc_ready ~= nil then
-                return assoc_ready and {id = 7, ssid = "Home"} or nil
+                return assoc_ready and {id = 7, ssid = opts.assoc_ssid or "Home"} or nil
             end
             if require("ffi/util").gettime() < assoc_deadline then return nil end
-            return {id = 7, ssid = "Home"}
+            return {id = 7, ssid = opts.assoc_ssid or "Home"}
         end
         function mgr:setupNetworkAuthentication(network)
             calls.auth_setup = calls.auth_setup + 1
@@ -72,11 +72,12 @@ describe("NetworkMgr:async connect flow", function()
             calls.turn_off = (calls.turn_off or 0) + 1
         end
         -- Shorten the async flow's timeouts so tests don't take 30s+
-        mgr._auth_timeout_s = 2
-        mgr._bg_connect_wait_s = 2
-        mgr._scan_timeout_s = 2
-        mgr._dhcp_timeout_s = 2
-        mgr._turn_on_timeout_s = 2
+        -- (and so the real-time deadlines in drain() can't be outrun by busy work)
+        mgr._auth_timeout_s = 1
+        mgr._bg_connect_wait_s = 1
+        mgr._scan_timeout_s = 1
+        mgr._dhcp_timeout_s = 1
+        mgr._turn_on_timeout_s = 1
         mgr.pending_connection = true
     end
 
@@ -148,12 +149,48 @@ describe("NetworkMgr:async connect flow", function()
         assert.is.same(NetworkMgr.lease_ssid, nil)
     end)
 
+    it("does not claim association with the wrong AP", function()
+        stubBackends(NetworkMgr, {assoc_ready = true, assoc_ssid = "Other"})
+        NetworkMgr:reconnectOrShowNetworkMenu(function()
+            calls.complete = calls.complete + 1
+        end, false)
+        drain()
+        -- The association was for another network, so we keep waiting until we time out
+        assert.is.same(calls.complete, 0)
+        assert.is.same(calls.disconnect, 1)
+        assert.is.same(calls.abort, 1)
+        assert.is.same(NetworkMgr.lease_ssid, nil)
+    end)
+
+    it("removes the wpa network entry when cancelled mid-auth", function()
+        stubBackends(NetworkMgr, {assoc_ready = false})
+        -- Simulate a teardown while the auth poll is in flight: bump the gen
+        -- the first time the poll probes the association state
+        local bumped = false
+        local orig_getCurrentNetwork = NetworkMgr.getCurrentNetwork
+        function NetworkMgr:getCurrentNetwork()
+            if not bumped then
+                bumped = true
+                NetworkMgr._connect_gen = NetworkMgr._connect_gen + 1
+            end
+            return orig_getCurrentNetwork(self)
+        end
+        NetworkMgr:reconnectOrShowNetworkMenu(function()
+            calls.complete = calls.complete + 1
+        end, false)
+        drain()
+        assert.is.same(calls.complete, 0)
+        -- The enabled network entry was removed on cancellation
+        assert.is.same(calls.disconnect, 1)
+        assert.is.same(calls.abort, 0)
+    end)
+
     it("picks up wpa_supplicant's background connect", function()
         stubBackends(NetworkMgr, {
             -- No preferred (passworded) network in range: wpa_supplicant's own
             -- background connect is all we can rely on
             network_list = {{ssid = "Other", signal_quality = 50}},
-            assoc_after = 0.6,
+            assoc_after = 0.3,
             configured = {{ssid = "Home"}},
         })
         NetworkMgr:reconnectOrShowNetworkMenu(function()
@@ -257,5 +294,17 @@ describe("NetworkMgr: discreet Wi-Fi status", function()
         NetworkMgr:_abortWifiConnection()
         UIManager.broadcastEvent = broadcastEvent
         assert.is_true(failed)
+    end)
+
+    it("closes the connecting popup when the attempt is torn down", function()
+        G_reader_settings:makeFalse("discreet_wifi_status")
+        function NetworkMgr:isWifiOn() return false end
+        function NetworkMgr:isConnected() return false end
+        local info = NetworkMgr:turnOnWifiAndWaitForConnection()
+        assert.is_truthy(info)
+        assert.is_true(UIManager:isWidgetShown(info))
+        -- Torn down before the connectivity check that would close it could run
+        NetworkMgr:_abortWifiConnection()
+        assert.is_false(UIManager:isWidgetShown(info))
     end)
 end)
