@@ -1194,6 +1194,11 @@ function NetworkMgr:asyncTurnOnWifi(enable_fn, complete_callback, interactive)
         end
         self:reconnectOrShowNetworkMenu(complete_callback, interactive)
     end, function()
+        -- Torn down under us: the subprocess is killed, and its on_done never
+        -- runs, so close the bring-up popup here, or it would stay on screen.
+        if info then
+            UIManager:close(info)
+        end
         return self._connect_gen ~= gen
     end)
 
@@ -1211,10 +1216,6 @@ end
 function NetworkMgr:reconnectOrShowNetworkMenu(complete_callback, interactive)
     -- Any Wi-Fi teardown invalidates in-flight async steps.
     local gen = self._connect_gen
-    local function cancelled()
-        return self._connect_gen ~= gen
-    end
-
     local network_list
     local info
 
@@ -1231,6 +1232,17 @@ function NetworkMgr:reconnectOrShowNetworkMenu(complete_callback, interactive)
             info = InfoMessage:new{text = text}
             UIManager:show(info)
         end
+    end
+
+    -- Any stage popup left on screen when the flow is cancelled must be closed,
+    -- as the cancelled() early-returns below skip finish()'s own cleanup.
+    local function cancelled()
+        if self._connect_gen ~= gen then
+            setInfo(nil)
+            self.wifi_toggle_long_press = nil
+            return true
+        end
+        return false
     end
 
     local function finish(success, ssid, err_msg)
